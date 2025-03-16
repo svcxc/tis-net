@@ -670,8 +670,6 @@ fn render_ghost_nodes(d: &mut impl RaylibDraw, ghost_nodes: &GhostNodes) {
         GhostNodes::CreateGhosts(ghost_locs) => {
             for node_loc in ghost_loc_coords(ghost_locs) {
                 render_dashed_node_border(d, node_loc, GHOST_COLOR);
-
-                // render_plus(d, node_loc.center(), GHOST_COLOR);
             }
         }
 
@@ -701,21 +699,6 @@ fn render_dashed_line(
         d.draw_line_ex(dash_start, dash_start + dash_tail, LINE_THICKNESS, color);
     }
 }
-
-// fn render_plus(d: &mut impl RaylibDraw, center: Vector2, color: Color) {
-//     d.draw_line_ex(
-//         center + Vector2::new(-NODE_LINE_HEIGHT, 0.0),
-//         center + Vector2::new(NODE_LINE_HEIGHT, 0.0),
-//         LINE_THICKNESS,
-//         color,
-//     );
-//     d.draw_line_ex(
-//         center + Vector2::new(0.0, -NODE_LINE_HEIGHT),
-//         center + Vector2::new(0.0, NODE_LINE_HEIGHT),
-//         LINE_THICKNESS,
-//         color,
-//     );
-// }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Dir {
@@ -1135,147 +1118,6 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
         } => HandledInput::ViewChanged(GhostNodes::None, model.highlighted_node),
     }
 }
-
-/// returns None if execution is already stopped
-// fn stop_execution(mut nodes: Nodes, highlighted_node: NodeCoord) -> Option<Nodes> {
-//     let root = nodes
-//         .get_mut(&highlighted_node)
-//         .expect("highlighted node should always exist");
-
-//     if root.exec.is_none() {
-//         None
-//     } else {
-//         root.exec = None;
-
-//         Some(nodes)
-//     }
-// }
-
-// fn step_execution(nodes: Nodes, highlighted_node: NodeCoord) -> Nodes {
-//     fn seek_nodes_to_step(mut nodes: Nodes, from: NodeCoord, dirs: &[Dir]) -> Nodes {
-//         if !nodes.contains_key(&from) {
-//             return nodes;
-//         }
-
-//         nodes = step_node_execution(nodes, from);
-
-//         for neighbor_dir in dirs {
-//             let neighbor_loc = from.neighbor(*neighbor_dir);
-
-//             if !nodes.contains_key(&neighbor_loc) {
-//                 continue;
-//             };
-
-//             let blocked_dir = neighbor_dir.inverse();
-
-//             let seek_dirs: ArrayVec<Dir, 4> = Dir::ALL
-//                 .into_iter()
-//                 .filter(|dir| *dir != blocked_dir)
-//                 .collect();
-
-//             nodes = seek_nodes_to_step(nodes, neighbor_loc, &seek_dirs);
-//         }
-
-//         nodes
-//     }
-
-//     seek_nodes_to_step(nodes, highlighted_node, &Dir::ALL)
-// }
-
-// fn step_node_execution(mut nodes: Nodes, node_loc: NodeCoord) -> Nodes {
-//     let keys = [
-//         &node_loc,
-//         &node_loc.neighbor(Dir::Up),
-//         &node_loc.neighbor(Dir::Down),
-//         &node_loc.neighbor(Dir::Left),
-//         &node_loc.neighbor(Dir::Right),
-//     ];
-
-//     let [Some(node), up, down, left, right] = nodes.get_many_mut(keys) else {
-//         panic!("executing node should exist");
-//     };
-
-//     let neighbors = Neighbors {
-//         up: up.and_then(|node: &mut Node| node.exec.as_mut()),
-//         down: down.and_then(|node: &mut Node| node.exec.as_mut()),
-//         left: left.and_then(|node: &mut Node| node.exec.as_mut()),
-//         right: right.and_then(|node: &mut Node| node.exec.as_mut()),
-//     };
-
-//     if let Some(exec) = &mut node.exec {
-//         match exec.code[exec.ip as usize].op {
-//             Op::Mov(src, dst) => {
-//                 if let Some(value) = get_src_value(exec, neighbors, src) {
-//                     match dst {
-//                         Dst::Acc => {
-//                             exec.acc = value;
-//                             exec.inc_ip();
-//                         }
-//                         Dst::Dir(target_dir) => exec.io = NodeIO::Outbound(target_dir, value),
-//                     }
-//                 }
-//             }
-//             Op::Add(src) => {
-//                 if let Some(value) = get_src_value(exec, neighbors, src) {
-//                     exec.acc = exec.acc.saturating_add(value);
-//                 }
-//             }
-//             Op::Jmp(target) => exec.ip = target,
-//             Op::Nop => exec.inc_ip(),
-//         }
-//     } else if let Ok(exec) = NodeExec::init(&node.text) {
-//         // execution starts now
-//         node.exec = Some(exec);
-//     }
-
-//     nodes
-// }
-
-// struct Neighbors<'n> {
-//     up: Option<&'n mut NodeExec>,
-//     down: Option<&'n mut NodeExec>,
-//     left: Option<&'n mut NodeExec>,
-//     right: Option<&'n mut NodeExec>,
-// }
-
-// impl<'n> Neighbors<'n> {
-//     fn get<'a>(self, dir: &'a Dir) -> Option<&'n mut NodeExec> {
-//         match dir {
-//             Dir::Up => self.up,
-//             Dir::Down => self.down,
-//             Dir::Left => self.left,
-//             Dir::Right => self.right,
-//         }
-//     }
-// }
-
-// fn get_src_value(exec: &mut NodeExec, neighbors: Neighbors, src: Src) -> Option<Num> {
-//     match src {
-//         Src::Imm(num) => Some(num),
-//         Src::Acc => Some(exec.acc),
-//         Src::Dir(target_dir) => {
-//             if exec.io == NodeIO::None {
-//                 exec.io = NodeIO::Inbound(target_dir);
-//                 None
-//             } else {
-//                 neighbors.get(&target_dir).and_then(|neighbor_exec| {
-//                     if let NodeIO::Outbound(neighbor_outbound_dir, value) = neighbor_exec.io
-//                         && neighbor_outbound_dir == target_dir.inverse()
-//                     {
-//                         neighbor_exec.inc_ip();
-
-//                         neighbor_exec.io = NodeIO::None;
-//                         exec.io = NodeIO::None;
-
-//                         Some(value)
-//                     } else {
-//                         None
-//                     }
-//                 })
-//             }
-//         }
-//     }
-// }
 
 fn stop_execution(nodes: &Nodes, starting_node: NodeCoord) -> Option<Nodes> {
     let new_nodes = Nodes::new();
