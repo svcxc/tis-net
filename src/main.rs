@@ -1402,6 +1402,8 @@ struct ParseErr {
 
 #[derive(Clone)]
 enum ParseProblem {
+    NotEnoughArgs,
+    TooManyArgs,
     InvalidSrc,
     InvalidDst,
     InvalidInstruction,
@@ -1429,35 +1431,41 @@ fn parse_node_text(node_text: &NodeText) -> Result<NodeCode, ParseErr> {
             None => semantic_text,
         };
 
-        let op = match op_text
-            .split_ascii_whitespace()
-            .collect::<Vec<&str>>()
-            .as_slice()
-        {
-            &[] => continue,
+        let tokens = &mut op_text.split_ascii_whitespace();
 
-            &["MOV", src, dst] => Op::Mov(
-                parse_src(src, line_no as u8)?,
-                parse_dst(dst, line_no as u8)?,
-            ),
+        let Some(opcode) = tokens.next() else {
+            continue;
+        };
 
-            &["ADD", arg] => Op::Add(parse_src(arg, line_no as u8)?),
+        let line_no = line_no as u8;
 
-            &["JMP", label] => Op::Jmp(label),
+        let op = match opcode {
+            "MOV" => Op::Mov(expect_src(tokens, line_no)?, expect_dst(tokens, line_no)?),
 
-            &["NOP"] => Op::Nop,
+            "ADD" => Op::Add(expect_src(tokens, line_no)?),
+
+            "JMP" => Op::Jmp(expect_label(tokens, line_no)?),
+
+            "NOP" => Op::Nop,
 
             _ => {
                 return Err(ParseErr {
                     problem: ParseProblem::InvalidInstruction,
-                    line: line_no as u8,
+                    line: line_no,
                 });
             }
         };
 
+        if tokens.next().is_some() {
+            return Err(ParseErr {
+                problem: ParseProblem::TooManyArgs,
+                line: line_no,
+            });
+        }
+
         code.push(Instruction {
             op,
-            src_line: line_no as u8,
+            src_line: line_no,
         });
     }
 
@@ -1485,7 +1493,31 @@ fn parse_node_text(node_text: &NodeText) -> Result<NodeCode, ParseErr> {
         .try_collect()
 }
 
-fn parse_src(arg: &str, line: u8) -> Result<Src, ParseErr> {
+fn expect_label<'txt>(
+    tokens: &mut impl Iterator<Item = &'txt str>,
+    line: u8,
+) -> Result<&'txt str, ParseErr> {
+    let Some(label) = tokens.next() else {
+        return Err(ParseErr {
+            problem: ParseProblem::NotEnoughArgs,
+            line,
+        });
+    };
+
+    Ok(label)
+}
+
+fn expect_src<'txt>(
+    tokens: &mut impl Iterator<Item = &'txt str>,
+    line: u8,
+) -> Result<Src, ParseErr> {
+    let Some(arg) = tokens.next() else {
+        return Err(ParseErr {
+            problem: ParseProblem::NotEnoughArgs,
+            line,
+        });
+    };
+
     match arg {
         "ACC" => Ok(Src::Acc),
         "UP" => Ok(Src::Dir(Dir::Up)),
@@ -1505,7 +1537,17 @@ fn parse_src(arg: &str, line: u8) -> Result<Src, ParseErr> {
     }
 }
 
-fn parse_dst(arg: &str, line: u8) -> Result<Dst, ParseErr> {
+fn expect_dst<'txt>(
+    tokens: &mut impl Iterator<Item = &'txt str>,
+    line: u8,
+) -> Result<Dst, ParseErr> {
+    let Some(arg) = tokens.next() else {
+        return Err(ParseErr {
+            problem: ParseProblem::NotEnoughArgs,
+            line,
+        });
+    };
+
     match arg {
         "ACC" => Ok(Dst::Acc),
         "UP" => Ok(Dst::Dir(Dir::Up)),
