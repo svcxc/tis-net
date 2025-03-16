@@ -1,0 +1,2 @@
+- implement key repeat behavior when a key is held
+- allow user to let nodes execute without manually stepping
