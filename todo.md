@@ -1,5 +1,6 @@
 - implement key repeat behavior when a key is held
+- add text selection & cut/copy/paste
 - allow user to let nodes execute without manually stepping
 - allow optional comma between instruction arguments
 - replace "LAST" gizmo by "IDLE" percentage gizmo
-- fix io arrow and value overlapping 
+- fix io arrow and value overlapping

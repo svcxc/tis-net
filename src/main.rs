@@ -309,9 +309,7 @@ impl NodeCoord {
     }
 
     fn line_pos(&self, line_number: usize) -> Vector2 {
-        self.top_left_corner()
-            + Vector2::one().scale_by(NODE_INSIDE_PADDING)
-            + Vector2::new(0., line_number as f32 * NODE_LINE_HEIGHT)
+        self.text_loc() + Vector2::new(0., line_number as f32 * NODE_LINE_HEIGHT)
     }
 
     fn center(&self) -> Vector2 {
@@ -442,14 +440,16 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
 
         render_node_gizmos(d, *node_loc, &node.exec, font, line_color, Color::GRAY);
 
-        d.draw_text_ex(
-            font,
-            &node.text,
-            node_loc.text_loc(),
-            NODE_FONT_SIZE,
-            NODE_FONT_SPACING,
-            Color::WHITE,
-        );
+        render_node_text(d, node, node_loc, font);
+
+        // d.draw_text_ex(
+        //     font,
+        //     &node.text,
+        //     node_loc.text_loc(),
+        //     NODE_FONT_SIZE,
+        //     NODE_FONT_SPACING,
+        //     Color::WHITE,
+        // );
 
         // the below two things should not be true at the same time if I did my homework
         // (because a node with an error should not be able to begin executing)
@@ -465,14 +465,6 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
         if let Some(exec) = &node.exec
             && !exec.code.is_empty()
         {
-            let highlight_color = if exec.io == NodeIO::None {
-                Color::WHITE
-            } else {
-                Color::GRAY
-            };
-
-            render_highlighted_line(d, node_loc, node, font, &highlight_color);
-
             if let NodeIO::Outbound(dir, value) = exec.io {
                 render_io_arrow(d, node_loc, dir, &value.to_string(), font);
             } else if let NodeIO::Inbound(io_dir) = exec.io
@@ -489,6 +481,86 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
         {
             render_error_msg(d, node_loc, &error.problem, font);
         };
+    }
+}
+
+fn render_node_text(d: &mut impl RaylibDraw, node: &Node, node_loc: &NodeCoord, font: &Font) {
+    let highlight = node.exec.as_ref().and_then(|exec| {
+        if exec.code.is_empty() {
+            None
+        } else {
+            Some(exec.code[exec.ip as usize].src_line)
+        }
+    });
+
+    for (line_no, line) in node.text.split('\n').enumerate() {
+        let line_loc = node_loc.line_pos(line_no);
+
+        let highlighted = Some(line_no as u8) == highlight;
+
+        render_node_text_line(d, line_loc, line, highlighted, font);
+    }
+}
+
+fn render_node_text_line(
+    d: &mut impl RaylibDraw,
+    line_loc: Vector2,
+    text: &str,
+    highlighted: bool,
+    font: &Font,
+) {
+    let comment_color = Color::GRAY;
+
+    let text_color = if highlighted {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+
+    if highlighted {
+        let highlight_pos = line_loc
+            - Vector2 {
+                x: NODE_INSIDE_PADDING * 0.25,
+                y: 0.0,
+            };
+
+        const HIGHLIGHT_SIZE: Vector2 = Vector2 {
+            x: NODE_TEXT_BOX_WIDTH + NODE_INSIDE_PADDING * 0.5,
+            y: NODE_LINE_HEIGHT,
+        };
+
+        d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, Color::WHITE);
+    }
+
+    if let Some(comment_start) = text.find('#') {
+        let char_offset = Vector2::new(NODE_CHAR_WIDTH, 0.0);
+        let comment_offset = char_offset.scale_by(comment_start as f32);
+
+        d.draw_text_ex(
+            font,
+            &text[..comment_start],
+            line_loc,
+            NODE_FONT_SIZE,
+            NODE_FONT_SPACING,
+            text_color,
+        );
+        d.draw_text_ex(
+            font,
+            &text[comment_start..],
+            line_loc + comment_offset,
+            NODE_FONT_SIZE,
+            NODE_FONT_SPACING,
+            comment_color,
+        );
+    } else {
+        d.draw_text_ex(
+            font,
+            text,
+            line_loc,
+            NODE_FONT_SIZE,
+            NODE_FONT_SPACING,
+            text_color,
+        );
     }
 }
 
@@ -673,42 +745,6 @@ fn render_io_arrow(
     render_arrow(d, arrow_center, dir, Color::WHITE);
 
     render_centered_text(d, label, text_center, font, Color::WHITE);
-}
-
-fn render_highlighted_line(
-    d: &mut impl RaylibDraw,
-    node_loc: &NodeCoord,
-    node: &Node,
-    font: &Font,
-    color: &Color,
-) {
-    if let Some(NodeExec { ip, ref code, .. }) = node.exec {
-        let line_no = code[ip as usize].src_line as usize;
-
-        let line_pos = node_loc.line_pos(line_no);
-
-        let highlight_pos = line_pos
-            - Vector2 {
-                x: NODE_INSIDE_PADDING * 0.25,
-                y: 0.0,
-            };
-
-        const HIGHLIGHT_SIZE: Vector2 = Vector2 {
-            x: NODE_TEXT_BOX_WIDTH + NODE_INSIDE_PADDING * 0.5,
-            y: NODE_LINE_HEIGHT,
-        };
-
-        d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, color);
-
-        d.draw_text_ex(
-            font,
-            &node.text.lines().nth(line_no).unwrap_or(""),
-            line_pos,
-            NODE_FONT_SIZE,
-            NODE_FONT_SPACING,
-            Color::BLACK,
-        );
-    }
 }
 
 fn render_ghost_nodes(d: &mut impl RaylibDraw, ghost_nodes: &GhostNodes) {
