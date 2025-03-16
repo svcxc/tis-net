@@ -935,8 +935,6 @@ fn get_input(rl: &mut RaylibHandle) -> Input {
 }
 
 fn update(model: Model, input: Input) -> Option<Model> {
-    let old_camera = model.camera.clone();
-
     let (nodes, ghost_nodes, highlighted_node) = match handle_input(&model, &input) {
         HandledInput::Exit => return None,
         HandledInput::NoChange => (model.nodes, model.ghost_nodes, model.highlighted_node),
@@ -950,7 +948,7 @@ fn update(model: Model, input: Input) -> Option<Model> {
     };
 
     let camera = update_camera(
-        old_camera,
+        model.camera,
         highlighted_node,
         input.window_dimensions,
         input.mouse_wheel_move,
