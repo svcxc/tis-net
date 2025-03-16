@@ -1172,13 +1172,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
 fn stop_execution(nodes: &Nodes, starting_node: NodeCoord) -> Option<Nodes> {
     let new_nodes = Nodes::new();
 
-    match seek_nodes(
-        nodes,
-        new_nodes,
-        starting_node,
-        &Dir::ALL,
-        &mut stop_node_execution,
-    ) {
+    match seek_nodes(nodes, new_nodes, starting_node, &mut stop_node_execution) {
         Ok(new_nodes) => Some(new_nodes),
         Err(_) => None,
     }
@@ -1205,13 +1199,7 @@ fn stop_node_execution(
 fn step_execution(nodes: &Nodes, starting_node: NodeCoord) -> Option<Nodes> {
     let new_nodes = Nodes::new();
 
-    match seek_nodes(
-        nodes,
-        new_nodes,
-        starting_node,
-        &Dir::ALL,
-        &mut step_node_execution,
-    ) {
+    match seek_nodes(nodes, new_nodes, starting_node, &mut step_node_execution) {
         Ok(new_nodes) => Some(new_nodes),
         Err(_) => None,
     }
@@ -1221,23 +1209,18 @@ fn seek_nodes(
     old_nodes: &Nodes,
     mut new_nodes: Nodes,
     start_loc: NodeCoord,
-    dirs: &[Dir],
     transform: &mut impl FnMut(&Nodes, Nodes, NodeCoord) -> Result<Nodes, Nodes>,
 ) -> Result<Nodes, Nodes> {
+    if new_nodes.contains_key(&start_loc) {
+        return Ok(new_nodes);
+    }
+
     new_nodes = transform(old_nodes, new_nodes, start_loc)?;
 
-    for neighbor_dir in dirs {
-        let neighbor_loc = start_loc.neighbor(*neighbor_dir);
+    for neighbor_dir in Dir::ALL {
+        let neighbor_loc = start_loc.neighbor(neighbor_dir);
 
-        let blocked_dir = neighbor_dir.inverse();
-
-        let seek_dirs: ArrayVec<Dir, 4> = dirs
-            .iter()
-            .cloned()
-            .filter(|dir| *dir != blocked_dir)
-            .collect();
-
-        new_nodes = match seek_nodes(old_nodes, new_nodes, neighbor_loc, &seek_dirs, transform) {
+        new_nodes = match seek_nodes(old_nodes, new_nodes, neighbor_loc, transform) {
             Ok(nodes) => nodes,
             Err(nodes) => nodes,
         }
