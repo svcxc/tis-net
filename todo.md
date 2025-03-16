@@ -2,3 +2,4 @@
 - allow user to let nodes execute without manually stepping
 - allow optional comma between instruction arguments
 - show error messages in addition to the red underline
+- replace "LAST" gizmo by "IDLE" percentage gizmo
