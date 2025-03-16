@@ -475,25 +475,30 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
             render_highlighted_line(d, node_loc, node, font, &highlight_color);
 
             if let NodeIO::Outbound(dir, value) = exec.io {
-                render_io_arrows(d, node_loc, dir, &value.to_string(), font);
+                render_io_arrow(d, node_loc, dir, &value.to_string(), font);
             } else if let NodeIO::Inbound(io_dir) = exec.io
-                && model
-                    .nodes
-                    .get(&node_loc.neighbor(io_dir))
-                    .is_some_and(|neighbor| {
-                        neighbor.exec.as_ref().is_some_and(|neighbor_exec| {
-                            if let NodeIO::Outbound(neighbor_io_dir, _) = neighbor_exec.io {
-                                neighbor_io_dir != io_dir.inverse()
-                            } else {
-                                false
-                            }
-                        })
-                    })
+                && !neighbor_sending_io(&model.nodes, node_loc, io_dir)
             {
-                render_io_arrows(d, &node_loc.neighbor(io_dir), io_dir.inverse(), "?", font);
+                render_io_arrow(d, &node_loc.neighbor(io_dir), io_dir.inverse(), "?", font);
             }
         }
     }
+}
+
+fn neighbor_sending_io(nodes: &Nodes, node_loc: &NodeCoord, io_dir: Dir) -> bool {
+    let Some(neighbor) = nodes.get(&node_loc.neighbor(io_dir)) else {
+        return false;
+    };
+
+    let Some(neighbor_exec) = &neighbor.exec else {
+        return false;
+    };
+
+    let NodeIO::Outbound(neighbor_io_dir, _) = neighbor_exec.io else {
+        return false;
+    };
+
+    neighbor_io_dir == io_dir.inverse()
 }
 
 fn render_node_gizmos(
@@ -606,7 +611,7 @@ fn render_error_squiggle(
     d.draw_line_ex(squiggle_start, squiggle_end, LINE_THICKNESS, Color::RED);
 }
 
-fn render_io_arrows(
+fn render_io_arrow(
     d: &mut impl RaylibDraw,
     node_loc: &NodeCoord,
     dir: Dir,
