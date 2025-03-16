@@ -1281,16 +1281,69 @@ fn step_node_execution(
                         exec.inc_ip();
                     }
                     Dst::Dir(target_dir) => exec.io = NodeIO::Outbound(target_dir, value),
+                    Dst::Nil => exec.inc_ip(),
                 }
             }
+        }
+        Op::Nop => exec.inc_ip(),
+        Op::Swp => {
+            (exec.acc, exec.bak) = (exec.bak, exec.acc);
+            exec.inc_ip();
+        }
+        Op::Sav => {
+            exec.bak = exec.acc;
+            exec.inc_ip();
         }
         Op::Add(src) => {
             if let Some(value) = get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src) {
                 exec.acc = exec.acc.saturating_add(value);
+                exec.inc_ip();
             }
         }
+        Op::Sub(src) => {
+            if let Some(value) = get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src) {
+                exec.acc = exec.acc.saturating_sub(value);
+                exec.inc_ip();
+            }
+        }
+        Op::Neg => {
+            exec.acc = -exec.acc;
+            exec.inc_ip();
+        }
         Op::Jmp(target) => exec.ip = target,
-        Op::Nop => exec.inc_ip(),
+        Op::Jez(target) => {
+            if exec.acc == 0 {
+                exec.ip = target
+            } else {
+                exec.inc_ip();
+            }
+        }
+        Op::Jnz(target) => {
+            if exec.acc != 0 {
+                exec.ip = target
+            } else {
+                exec.inc_ip();
+            }
+        }
+        Op::Jgz(target) => {
+            if exec.acc > 0 {
+                exec.ip = target
+            } else {
+                exec.inc_ip();
+            }
+        }
+        Op::Jlz(target) => {
+            if exec.acc < 0 {
+                exec.ip = target
+            } else {
+                exec.inc_ip();
+            }
+        }
+        Op::Jro(src) => {
+            if let Some(value) = get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src) {
+                exec.jro(value);
+            }
+        }
     }
 
     let _ = new_nodes.try_insert(node_loc, node);
@@ -1330,6 +1383,7 @@ fn get_src_value(
                 None
             }
         }
+        Src::Nil => Some(0),
     }
 }
 
@@ -1415,6 +1469,17 @@ impl NodeExec {
             self.ip = 0;
         }
     }
+
+    fn jro(&mut self, offset: Num) {
+        if offset < 0 {
+            self.ip = self.ip.saturating_sub(offset.abs() as u8);
+        } else {
+            self.ip = self.ip.saturating_add(offset as u8);
+            if self.ip as usize >= self.code.len() {
+                self.ip = (self.code.len() - 1) as u8;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1426,9 +1491,18 @@ struct Instruction<Label: Copy = u8> {
 #[derive(Clone, Copy)]
 enum Op<Label: Copy> {
     Mov(Src, Dst),
-    Add(Src),
-    Jmp(Label),
     Nop,
+    Swp,
+    Sav,
+    Add(Src),
+    Sub(Src),
+    Neg,
+    Jmp(Label),
+    Jez(Label),
+    Jnz(Label),
+    Jgz(Label),
+    Jlz(Label),
+    Jro(Src),
 }
 
 #[derive(Clone, Copy)]
@@ -1436,12 +1510,14 @@ enum Src {
     Imm(Num),
     Dir(Dir),
     Acc,
+    Nil,
 }
 
 #[derive(Clone, Copy)]
 enum Dst {
     Dir(Dir),
     Acc,
+    Nil,
 }
 
 #[derive(Clone)]
@@ -1504,12 +1580,18 @@ fn parse_node_text(node_text: &NodeText) -> Result<NodeCode, ParseErr> {
 
         let op = match opcode {
             "MOV" => Op::Mov(expect_src(tokens, line_no)?, expect_dst(tokens, line_no)?),
-
-            "ADD" => Op::Add(expect_src(tokens, line_no)?),
-
-            "JMP" => Op::Jmp(expect_label(tokens, line_no)?),
-
             "NOP" => Op::Nop,
+            "SWP" => Op::Swp,
+            "SAV" => Op::Sav,
+            "ADD" => Op::Add(expect_src(tokens, line_no)?),
+            "SUB" => Op::Sub(expect_src(tokens, line_no)?),
+            "NEG" => Op::Neg,
+            "JMP" => Op::Jmp(expect_label(tokens, line_no)?),
+            "JEZ" => Op::Jez(expect_label(tokens, line_no)?),
+            "JNZ" => Op::Jnz(expect_label(tokens, line_no)?),
+            "JGZ" => Op::Jgz(expect_label(tokens, line_no)?),
+            "JLZ" => Op::Jlz(expect_label(tokens, line_no)?),
+            "JRO" => Op::Jro(expect_src(tokens, line_no)?),
 
             _ => {
                 return Err(ParseErr {
@@ -1543,9 +1625,18 @@ fn parse_node_text(node_text: &NodeText) -> Result<NodeCode, ParseErr> {
 
             let op = match instr.op {
                 Op::Mov(src, dst) => Op::Mov(src, dst),
-                Op::Add(src) => Op::Add(src),
-                Op::Jmp(label) => Op::Jmp(resolve(label)?),
                 Op::Nop => Op::Nop,
+                Op::Swp => Op::Swp,
+                Op::Sav => Op::Sav,
+                Op::Add(src) => Op::Add(src),
+                Op::Sub(src) => Op::Sub(src),
+                Op::Neg => Op::Neg,
+                Op::Jmp(label) => Op::Jmp(resolve(label)?),
+                Op::Jez(label) => Op::Jez(resolve(label)?),
+                Op::Jnz(label) => Op::Jnz(resolve(label)?),
+                Op::Jgz(label) => Op::Jgz(resolve(label)?),
+                Op::Jlz(label) => Op::Jlz(resolve(label)?),
+                Op::Jro(src) => Op::Jro(src),
             };
 
             Ok(Instruction {
@@ -1587,6 +1678,7 @@ fn expect_src<'txt>(
         "DOWN" => Ok(Src::Dir(Dir::Down)),
         "LEFT" => Ok(Src::Dir(Dir::Left)),
         "RIGHT" => Ok(Src::Dir(Dir::Right)),
+        "NIL" => Ok(Src::Nil),
         other => {
             if let Ok(num) = other.parse() {
                 Ok(Src::Imm(num))
@@ -1617,6 +1709,7 @@ fn expect_dst<'txt>(
         "DOWN" => Ok(Dst::Dir(Dir::Down)),
         "LEFT" => Ok(Dst::Dir(Dir::Left)),
         "RIGHT" => Ok(Dst::Dir(Dir::Right)),
+        "NIL" => Ok(Dst::Nil),
         _ => Err(ParseErr {
             problem: ParseProblem::InvalidDst,
             line,
