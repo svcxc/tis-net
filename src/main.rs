@@ -456,11 +456,10 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
         // but this isn't reflected in the type system. If it were to happen though, it means there's a bug
         debug_assert!(!(node.error.is_some() && node.exec.is_some()));
 
-        if let Some(parse_err) = &node.error
-            && (*node_loc != model.highlighted_node
-                || line_column(&node.text, node.cursor).0 != parse_err.line as usize)
+        if let Some(error) = &node.error
+            && show_error(node_loc, node, &model.highlighted_node, error.line)
         {
-            render_error_squiggle(d, *node_loc, &node.text, parse_err.line);
+            render_error_squiggle(d, *node_loc, &node.text, error.line);
         }
 
         if let Some(exec) = &node.exec
@@ -483,6 +482,52 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
             }
         }
     }
+
+    for (node_loc, node) in model.nodes.iter() {
+        if let Some(error) = &node.error
+            && show_error(node_loc, node, &model.highlighted_node, error.line)
+        {
+            render_error_msg(d, node_loc, &error.problem, font);
+        };
+    }
+}
+
+fn show_error(
+    node_loc: &NodeCoord,
+    node: &Node,
+    highlighted_node: &NodeCoord,
+    error_line: u8,
+) -> bool {
+    node_loc != highlighted_node || line_column(&node.text, node.cursor).0 != error_line as usize
+}
+
+fn render_error_msg(
+    d: &mut impl RaylibDraw,
+    node_loc: &NodeCoord,
+    problem: &ParseProblem,
+    font: &Font,
+) {
+    const BOX_HEIGHT: f32 = NODE_LINE_HEIGHT + 2.0 * NODE_INSIDE_PADDING;
+
+    const BOX_NODE_PADDING: f32 = 0.25 * (NODE_OUTSIDE_PADDING - BOX_HEIGHT);
+
+    let bottom_left = node_loc.top_left_corner() - Vector2::new(0.0, BOX_NODE_PADDING);
+
+    let top_left = bottom_left - Vector2::new(0.0, BOX_HEIGHT);
+
+    let top_right = top_left + Vector2::new(NODE_OUTSIDE_SIDE_LENGTH, 0.0);
+    let bottom_right = bottom_left + Vector2::new(NODE_OUTSIDE_SIDE_LENGTH, 0.0);
+
+    let center = top_left + Vector2::new(0.5 * NODE_OUTSIDE_SIDE_LENGTH, 0.5 * BOX_HEIGHT);
+
+    d.draw_rectangle_v(top_left, bottom_right - top_left, Color::BLACK);
+
+    d.draw_line_ex(top_left, top_right, LINE_THICKNESS, Color::RED);
+    d.draw_line_ex(top_left, bottom_left, LINE_THICKNESS, Color::RED);
+    d.draw_line_ex(bottom_left, bottom_right, LINE_THICKNESS, Color::RED);
+    d.draw_line_ex(top_right, bottom_right, LINE_THICKNESS, Color::RED);
+
+    render_centered_text(d, problem.to_str(), center, font, Color::RED);
 }
 
 fn neighbor_sending_io(nodes: &Nodes, node_loc: &NodeCoord, io_dir: Dir) -> bool {
@@ -1412,7 +1457,20 @@ enum ParseProblem {
     InvalidSrc,
     InvalidDst,
     InvalidInstruction,
-    UndefinedLabel(Box<str>),
+    UndefinedLabel,
+}
+
+impl ParseProblem {
+    fn to_str(&self) -> &'static str {
+        match self {
+            ParseProblem::NotEnoughArgs => "NOT ENOUGH ARGS",
+            ParseProblem::TooManyArgs => "TOO MANY ARGS",
+            ParseProblem::InvalidSrc => "INVALID SOURCE ARG",
+            ParseProblem::InvalidDst => "INVALID DESTINATION ARG",
+            ParseProblem::InvalidInstruction => "INVALID OPCODE",
+            ParseProblem::UndefinedLabel => "UNDEFINED LABEL",
+        }
+    }
 }
 
 fn parse_node_text(node_text: &NodeText) -> Result<NodeCode, ParseErr> {
@@ -1478,7 +1536,7 @@ fn parse_node_text(node_text: &NodeText) -> Result<NodeCode, ParseErr> {
         .map(|instr| {
             let resolve = |label: &str| {
                 labels.get(&label).copied().ok_or(ParseErr {
-                    problem: ParseProblem::UndefinedLabel(label.into()),
+                    problem: ParseProblem::UndefinedLabel,
                     line: instr.src_line,
                 })
             };
