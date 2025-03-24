@@ -329,7 +329,7 @@ impl NodeCoord {
 }
 
 fn main() {
-    let (mut rl, thread) = raylib::init().resizable().title("Hello, World").build();
+    let (mut rl, thread) = raylib::init().resizable().title("TIS-NET").build();
 
     rl.set_target_fps(60);
     rl.set_text_line_spacing(NODE_LINE_HEIGHT as _);
@@ -339,7 +339,6 @@ fn main() {
         .load_font_from_memory(
             &thread,
             ".ttf",
-            // include_bytes!("RobotoMono-Light.ttf"),
             include_bytes!("RobotoMono-Medium.ttf"),
             40,
             None,
