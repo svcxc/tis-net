@@ -2,5 +2,5 @@
 - add text selection & cut/copy/paste
 - allow user to let nodes execute without manually stepping
 - allow optional comma between instruction arguments
-- replace "LAST" gizmo by "IDLE" percentage gizmo
+- add ANY and LAST ports
 - fix io arrow and value overlapping
