@@ -463,15 +463,6 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
 
         render_node_text(d, node, node_loc, font);
 
-        // d.draw_text_ex(
-        //     font,
-        //     &node.text,
-        //     node_loc.text_loc(),
-        //     NODE_FONT_SIZE,
-        //     NODE_FONT_SPACING,
-        //     Color::WHITE,
-        // );
-
         // the below two things should not be true at the same time if I did my homework
         // (because a node with an error should not be able to begin executing)
         // but this isn't reflected in the type system. If it were to happen though, it means there's a bug
@@ -496,6 +487,7 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
         }
     }
 
+    // error boxes are rendered in a second pass because they need to be rendered over top of everything else
     for (node_loc, node) in model.nodes.iter() {
         if let Some(error) = &node.error
             && show_error(node_loc, node, &model.highlighted_node, error.line)
