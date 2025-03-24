@@ -1298,11 +1298,17 @@ fn seek_nodes(
 ) -> Result<Nodes, Nodes> {
     new_nodes = match transform(old_nodes, new_nodes, start_loc) {
         Ok(nodes) => {
-            println!("updated {start_loc:?}, updating neighbors next");
+            println!(
+                "updated {start_loc:?}, updating neighbors next ({})",
+                nodes.len()
+            );
             nodes
         }
         Err(nodes) => {
-            println!("didn't update {start_loc:?}, skipping neighbors");
+            println!(
+                "didn't update {start_loc:?}, skipping neighbors ({})",
+                nodes.len()
+            );
             return Err(nodes);
         }
     };
@@ -1348,6 +1354,7 @@ fn step_node_execution(
     };
 
     if let NodeIO::Outbound(_, _) = exec.io {
+        new_nodes.try_insert(node_loc, node).unwrap();
         return Ok(new_nodes);
     }
 
