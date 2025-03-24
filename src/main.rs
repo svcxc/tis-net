@@ -5,7 +5,7 @@
 #![feature(map_many_mut)]
 #![feature(iter_intersperse)]
 
-use std::{borrow::Cow, collections::HashMap, f32};
+use std::{borrow::Cow, collections::HashMap, f32, fmt::Debug};
 
 use arrayvec::{ArrayString, ArrayVec};
 use raylib::prelude::*;
@@ -57,7 +57,7 @@ fn ghost_loc_coords_directions(ghost_locs: &GhostLocs) -> impl Iterator<Item = (
 
 type NodeText = ArrayString<NODE_TEXT_BUFFER_SIZE>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Node {
     text: NodeText,
     cursor: usize,
@@ -378,25 +378,45 @@ fn init() -> Model {
         zoom: 0.85,
     };
 
-    let sender = Node::with_text(
-        ["MOV 69 RIGHT", "A:JMP A"]
-            .into_iter()
-            .intersperse("\n")
-            .collect::<String>()
-            .as_str(),
-    );
+    fn combine<'str>(lines: impl IntoIterator<Item = &'str str>) -> String {
+        lines.into_iter().intersperse("\n").collect()
+    }
 
-    let receiver = Node::with_text(
-        ["MOV LEFT ACC", "A:JMP A"]
-            .into_iter()
-            .intersperse("\n")
-            .collect::<String>()
-            .as_str(),
-    );
+    let left = Node::with_text(&combine([
+        "MOV 10 RIGHT",
+        "MOV 1 RIGHT",
+        "MOV 100 RIGHT",
+        "MOV 0 RIGHT",
+        "JRO 0",
+    ]));
+
+    let middle = Node::with_text(&combine([
+        "RST:MOV LEFT ACC",
+        "JNZ SK1",
+        "MOV 1 RIGHT",
+        "JMP RST",
+        "SK1:MOV 4 RIGHT",
+        "MOV ACC RIGHT",
+        "MOV ACC RIGHT",
+    ]));
+
+    let right = Node::with_text(&combine([
+        "RST:JRO LEFT",
+        "MOV ACC RIGHT#1",
+        "MOV 0 ACC",
+        "SAV#4",
+        "SUB LEFT",
+        "JLZ SK1",
+        "MOV LEFT ACC",
+        "JMP RST",
+        "SK1:MOV LEFT NIL",
+        "SWP",
+    ]));
 
     let nodes = HashMap::from([
-        (highlighted_node, sender),
-        (highlighted_node.neighbor(Dir::Right), receiver),
+        (highlighted_node.neighbor(Dir::Left), left),
+        (highlighted_node, middle),
+        (highlighted_node.neighbor(Dir::Right), right),
     ]);
 
     Model {
@@ -489,35 +509,54 @@ fn render_node_text(d: &mut impl RaylibDraw, node: &Node, node_loc: &NodeCoord, 
         if exec.code.is_empty() {
             None
         } else {
-            Some(exec.code[exec.ip as usize].src_line)
+            Some((
+                exec.code[exec.ip as usize].src_line,
+                exec.io == NodeIO::None,
+            ))
         }
     });
 
     for (line_no, line) in node.text.split('\n').enumerate() {
         let line_loc = node_loc.line_pos(line_no);
 
-        let highlighted = Some(line_no as u8) == highlight;
+        let line_no = line_no as u8;
+        let highlight_mode = match highlight {
+            Some((highlight_line, true)) if highlight_line == line_no => Highlight::Executing,
+            Some((highlight_line, false)) if highlight_line == line_no => Highlight::IO,
+            _ => Highlight::None,
+        };
 
-        render_node_text_line(d, line_loc, line, highlighted, font);
+        render_node_text_line(d, line_loc, line, highlight_mode, font);
     }
+}
+
+#[derive(PartialEq, Eq, Debug)]
+enum Highlight {
+    None,
+    Executing,
+    IO,
 }
 
 fn render_node_text_line(
     d: &mut impl RaylibDraw,
     line_loc: Vector2,
     text: &str,
-    highlighted: bool,
+    highlight_mode: Highlight,
     font: &Font,
 ) {
-    let comment_color = Color::GRAY;
-
-    let text_color = if highlighted {
-        Color::BLACK
+    let (comment_color, text_color) = if highlight_mode == Highlight::None {
+        (Color::GRAY, Color::WHITE)
     } else {
-        Color::WHITE
+        (Color::BLACK, Color::BLACK)
     };
 
-    if highlighted {
+    if highlight_mode != Highlight::None {
+        let highlight_color = if highlight_mode == Highlight::Executing {
+            Color::WHITE
+        } else {
+            Color::GRAY
+        };
+
         let highlight_pos = line_loc
             - Vector2 {
                 x: NODE_INSIDE_PADDING * 0.25,
@@ -529,7 +568,7 @@ fn render_node_text_line(
             y: NODE_LINE_HEIGHT,
         };
 
-        d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, Color::WHITE);
+        d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, highlight_color);
     }
 
     if let Some(comment_start) = text.find('#') {
@@ -1223,6 +1262,10 @@ fn stop_node_execution(
         return Err(new_nodes);
     };
 
+    if new_nodes.contains_key(&node_loc) {
+        return Err(new_nodes);
+    }
+
     if node.exec.is_some() {
         node.exec = None;
         new_nodes.insert(node_loc, node);
@@ -1235,10 +1278,16 @@ fn stop_node_execution(
 fn step_execution(nodes: &Nodes, starting_node: NodeCoord) -> Option<Nodes> {
     let new_nodes = Nodes::new();
 
-    match seek_nodes(nodes, new_nodes, starting_node, &mut step_node_execution) {
+    println!("begin step");
+
+    let ret = match seek_nodes(nodes, new_nodes, starting_node, &mut step_node_execution) {
         Ok(new_nodes) => Some(new_nodes),
         Err(_) => None,
-    }
+    };
+
+    println!("end step");
+
+    ret
 }
 
 fn seek_nodes(
@@ -1247,14 +1296,21 @@ fn seek_nodes(
     start_loc: NodeCoord,
     transform: &mut impl FnMut(&Nodes, Nodes, NodeCoord) -> Result<Nodes, Nodes>,
 ) -> Result<Nodes, Nodes> {
-    if new_nodes.contains_key(&start_loc) {
-        return Ok(new_nodes);
-    }
-
-    new_nodes = transform(old_nodes, new_nodes, start_loc)?;
+    new_nodes = match transform(old_nodes, new_nodes, start_loc) {
+        Ok(nodes) => {
+            println!("updated {start_loc:?}, updating neighbors next");
+            nodes
+        }
+        Err(nodes) => {
+            println!("didn't update {start_loc:?}, skipping neighbors");
+            return Err(nodes);
+        }
+    };
 
     for neighbor_dir in Dir::ALL {
         let neighbor_loc = start_loc.neighbor(neighbor_dir);
+
+        println!("updating neighbor in {neighbor_dir:?}");
 
         new_nodes = match seek_nodes(old_nodes, new_nodes, neighbor_loc, transform) {
             Ok(nodes) => nodes,
@@ -1273,6 +1329,10 @@ fn step_node_execution(
     let Some(mut node) = old_nodes.get(&node_loc).cloned() else {
         return Err(new_nodes);
     };
+
+    if new_nodes.contains_key(&node_loc) {
+        return Err(new_nodes);
+    }
 
     let Some(ref mut exec) = node.exec else {
         if let Ok(exec) = NodeExec::init(&node.text)
@@ -1365,7 +1425,8 @@ fn step_node_execution(
         }
     }
 
-    let _ = new_nodes.try_insert(node_loc, node);
+    println!("added {node_loc:?} to new_nodes");
+    new_nodes.try_insert(node_loc, node).unwrap();
 
     Ok(new_nodes)
 }
@@ -1453,7 +1514,7 @@ type Num = i8;
 
 type NodeCode<Label = u8> = ArrayVec<Instruction<Label>, NODE_LINES>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct NodeExec {
     acc: Num,
     bak: Num,
@@ -1462,7 +1523,7 @@ struct NodeExec {
     ip: u8,
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 enum NodeIO {
     None,
     Outbound(Dir, Num),
@@ -1501,14 +1562,14 @@ impl NodeExec {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Instruction<Label: Copy = u8> {
+#[derive(Clone, Copy, Debug)]
+struct Instruction<Label: Debug + Copy = u8> {
     op: Op<Label>,
     src_line: u8,
 }
 
-#[derive(Clone, Copy)]
-enum Op<Label: Copy> {
+#[derive(Clone, Copy, Debug)]
+enum Op<Label: Debug + Copy> {
     Mov(Src, Dst),
     Nop,
     Swp,
@@ -1524,7 +1585,7 @@ enum Op<Label: Copy> {
     Jro(Src),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Src {
     Imm(Num),
     Dir(Dir),
@@ -1532,20 +1593,20 @@ enum Src {
     Nil,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Dst {
     Dir(Dir),
     Acc,
     Nil,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct ParseErr {
     problem: ParseProblem,
     line: u8,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum ParseProblem {
     NotEnoughArgs,
     TooManyArgs,
