@@ -1278,16 +1278,10 @@ fn stop_node_execution(
 fn step_execution(nodes: &Nodes, starting_node: NodeCoord) -> Option<Nodes> {
     let new_nodes = Nodes::new();
 
-    println!("begin step");
-
-    let ret = match seek_nodes(nodes, new_nodes, starting_node, &mut step_node_execution) {
+    match seek_nodes(nodes, new_nodes, starting_node, &mut step_node_execution) {
         Ok(new_nodes) => Some(new_nodes),
         Err(_) => None,
-    };
-
-    println!("end step");
-
-    ret
+    }
 }
 
 fn seek_nodes(
@@ -1296,27 +1290,10 @@ fn seek_nodes(
     start_loc: NodeCoord,
     transform: &mut impl FnMut(&Nodes, Nodes, NodeCoord) -> Result<Nodes, Nodes>,
 ) -> Result<Nodes, Nodes> {
-    new_nodes = match transform(old_nodes, new_nodes, start_loc) {
-        Ok(nodes) => {
-            println!(
-                "updated {start_loc:?}, updating neighbors next ({})",
-                nodes.len()
-            );
-            nodes
-        }
-        Err(nodes) => {
-            println!(
-                "didn't update {start_loc:?}, skipping neighbors ({})",
-                nodes.len()
-            );
-            return Err(nodes);
-        }
-    };
+    transform(old_nodes, new_nodes, start_loc)?;
 
     for neighbor_dir in Dir::ALL {
         let neighbor_loc = start_loc.neighbor(neighbor_dir);
-
-        println!("updating neighbor in {neighbor_dir:?}");
 
         new_nodes = match seek_nodes(old_nodes, new_nodes, neighbor_loc, transform) {
             Ok(nodes) => nodes,
@@ -1432,7 +1409,6 @@ fn step_node_execution(
         }
     }
 
-    println!("added {node_loc:?} to new_nodes");
     new_nodes.try_insert(node_loc, node).unwrap();
 
     Ok(new_nodes)
