@@ -1290,7 +1290,7 @@ fn seek_nodes(
     start_loc: NodeCoord,
     transform: &mut impl FnMut(&Nodes, Nodes, NodeCoord) -> Result<Nodes, Nodes>,
 ) -> Result<Nodes, Nodes> {
-    transform(old_nodes, new_nodes, start_loc)?;
+    new_nodes = transform(old_nodes, new_nodes, start_loc)?;
 
     for neighbor_dir in Dir::ALL {
         let neighbor_loc = start_loc.neighbor(neighbor_dir);
