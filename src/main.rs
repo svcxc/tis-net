@@ -53,11 +53,15 @@ enum Node {
 }
 
 impl Node {
+    fn empty_exec() -> Self {
+        Self::Exec(ExecNode::empty())
+    }
+
     fn exec_with_text(text: &str) -> Self {
         Self::Exec(ExecNode::with_text(text))
     }
 
-    fn is_moveable(&self) -> bool {
+    fn is_inert(&self) -> bool {
         match self {
             Node::Exec(exec_node) => exec_node.is_in_edit_mode(),
         }
@@ -73,7 +77,6 @@ struct ExecNode {
 }
 
 impl ExecNode {
-    #[allow(unused)]
     fn empty() -> Self {
         Self {
             text: ArrayString::new(),
@@ -219,8 +222,9 @@ impl ExecNode {
             Pressed::Arrow(Dir::Down) => self.down(),
             Pressed::Arrow(Dir::Left) => self.left(),
             Pressed::Arrow(Dir::Right) => self.right(),
-            Pressed::Tab => {} // TODO: TAB and ESC are the only buttons here that can't be used in editing; move them out of this enum in the future
+            Pressed::Tab => {} // TODO: TAB, ESC, and DELETE are the only buttons here that can't be used in editing; move them out of this enum in the future
             Pressed::Esc => {}
+            Pressed::Delete => {}
             Pressed::Enter => self.enter(),
             Pressed::Backspace => self.backspace(),
             Pressed::Home => self.home(),
@@ -1005,6 +1009,7 @@ enum Pressed {
     Enter,
     Home,
     End,
+    Delete,
     Arrow(Dir),
     Char(char),
 }
@@ -1028,6 +1033,8 @@ fn get_input(rl: &mut RaylibHandle) -> Input {
         Some(Pressed::Home)
     } else if rl.is_key_pressed(KeyboardKey::KEY_END) || rl.is_key_pressed(GHETTO_END) {
         Some(Pressed::End)
+    } else if rl.is_key_pressed(KeyboardKey::KEY_DELETE) {
+        Some(Pressed::Delete)
     } else if rl.is_key_pressed(KeyboardKey::KEY_UP) {
         Some(Pressed::Arrow(Dir::Up))
     } else if rl.is_key_pressed(KeyboardKey::KEY_DOWN) {
@@ -1107,7 +1114,9 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
         } => {
             if let Some(updated_nodes) = stop_execution(&model.nodes, model.highlighted_node) {
                 let mut nodes = model.nodes.clone();
+
                 nodes.extend(updated_nodes);
+
                 HandledInput::Changes {
                     highlighted: None,
                     nodes: Some(nodes),
@@ -1115,6 +1124,27 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 }
             } else {
                 HandledInput::Exit
+            }
+        }
+
+        Input {
+            pressed: Some(Pressed::Delete),
+            ..
+        } => {
+            if let Some(node) = model.nodes.get(&model.highlighted_node)
+                && node.is_inert()
+            {
+                let mut nodes = model.nodes.clone();
+
+                nodes.remove(&model.highlighted_node);
+
+                HandledInput::Changes {
+                    highlighted: None,
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::None,
+                }
+            } else {
+                HandledInput::no_changes(Ghosts::None)
             }
         }
 
@@ -1147,14 +1177,29 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             // potential optimization: a special case of HandledInput could be made
             // in case only the currently highlighted node has changed, as it has here.
             // currently, the entire Nodes structure gets cloned when only one nodes text needs to change.
-            let mut nodes = model.nodes.clone();
 
-            let highlighted_node = nodes.get_mut(&model.highlighted_node);
+            let highlighted_node = model.nodes.get(&model.highlighted_node);
 
             if let Some(Node::Exec(exec_node)) = highlighted_node
                 && exec_node.is_in_edit_mode()
             {
+                let mut nodes = model.nodes.clone();
+
+                let mut exec_node = exec_node.clone();
+
                 exec_node.update_edit(&pressed);
+
+                nodes.insert(model.highlighted_node, Node::Exec(exec_node));
+
+                HandledInput::Changes {
+                    highlighted: None,
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::None,
+                }
+            } else if highlighted_node.is_none() && pressed == &Pressed::Char('A') {
+                let mut nodes = model.nodes.clone();
+
+                nodes.insert(model.highlighted_node, Node::empty_exec());
 
                 HandledInput::Changes {
                     highlighted: None,
@@ -1190,7 +1235,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             let highlighted_is_moveable = model
                 .nodes
                 .get(&model.highlighted_node)
-                .is_some_and(Node::is_moveable);
+                .is_some_and(Node::is_inert);
 
             if target_is_empty && highlighted_is_moveable {
                 let mut nodes = model.nodes.clone();
@@ -1225,7 +1270,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             let highlighted_is_moveable = model
                 .nodes
                 .get(&model.highlighted_node)
-                .is_some_and(Node::is_moveable);
+                .is_some_and(Node::is_inert);
 
             let ghosts = if highlighted_is_moveable {
                 Ghosts::ArrowGhosts
