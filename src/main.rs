@@ -5,7 +5,7 @@
 #![feature(map_many_mut)]
 #![feature(iter_intersperse)]
 
-use std::{borrow::Cow, collections::HashMap, f32, fmt::Debug};
+use std::{collections::HashMap, f32, fmt::Debug};
 
 use arrayvec::{ArrayString, ArrayVec};
 use raylib::prelude::*;
@@ -27,45 +27,53 @@ const GIZMO_OUTSIDE_SIDE_LENGTH: f32 = NODE_OUTSIDE_SIDE_LENGTH / 4.0;
 const NODE_TEXT_BOX_WIDTH: f32 =
     NODE_OUTSIDE_SIDE_LENGTH - GIZMO_OUTSIDE_SIDE_LENGTH - NODE_INSIDE_PADDING * 2.0;
 
+const GHOST_COLOR: Color = Color::GRAY;
+
 type Nodes = HashMap<NodeCoord, Node>;
 
 struct Model {
     camera: Camera2D,
     nodes: Nodes,
-    ghost_nodes: GhostNodes,
     highlighted_node: NodeCoord,
+    ghosts: Ghosts,
 }
 
-type GhostLocs = [Option<NodeCoord>; 4];
-
-enum GhostNodes {
-    CreateGhosts(GhostLocs),
-    MoveGhosts(GhostLocs),
+enum Ghosts {
+    ArrowGhosts,
+    MovementGhosts,
     None,
-}
-
-fn ghost_loc_coords(ghost_locs: &GhostLocs) -> impl Iterator<Item = NodeCoord> {
-    ghost_locs.iter().flatten().copied()
-}
-
-fn ghost_loc_coords_directions(ghost_locs: &GhostLocs) -> impl Iterator<Item = (NodeCoord, Dir)> {
-    ghost_locs
-        .iter()
-        .zip([Dir::Up, Dir::Down, Dir::Left, Dir::Right])
-        .filter_map(|(coord, dir)| coord.map(|coord| (coord, dir)))
 }
 
 type NodeText = ArrayString<NODE_TEXT_BUFFER_SIZE>;
 
 #[derive(Clone, Debug)]
-struct Node {
+enum Node {
+    Exec(ExecNode),
+    // Stack,
+}
+
+impl Node {
+    fn exec_with_text(text: &str) -> Self {
+        Self::Exec(ExecNode::with_text(text))
+    }
+
+    fn is_moveable(&self) -> bool {
+        match self {
+            Node::Exec(exec_node) => exec_node.is_in_edit_mode(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExecNode {
     text: NodeText,
     cursor: usize,
     error: Option<ParseErr>,
     exec: Option<NodeExec>,
 }
 
-impl Node {
+impl ExecNode {
+    #[allow(unused)]
     fn empty() -> Self {
         Self {
             text: ArrayString::new(),
@@ -73,10 +81,6 @@ impl Node {
             error: None,
             exec: None,
         }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.text.is_empty()
     }
 
     fn with_text(str: &str) -> Self {
@@ -381,7 +385,7 @@ fn init() -> Model {
         lines.into_iter().intersperse("\n").collect()
     }
 
-    let left = Node::with_text(&combine([
+    let left = Node::exec_with_text(&combine([
         "MOV 10 RIGHT",
         "MOV 1 RIGHT",
         "MOV 100 RIGHT",
@@ -389,7 +393,7 @@ fn init() -> Model {
         "JRO 0",
     ]));
 
-    let middle = Node::with_text(&combine([
+    let middle = Node::exec_with_text(&combine([
         "RST:MOV LEFT ACC",
         "JNZ SK1",
         "MOV 1 RIGHT",
@@ -399,7 +403,7 @@ fn init() -> Model {
         "MOV ACC RIGHT",
     ]));
 
-    let right = Node::with_text(&combine([
+    let right = Node::exec_with_text(&combine([
         "RST:JRO LEFT",
         "MOV ACC RIGHT#1",
         "MOV 0 ACC",
@@ -422,8 +426,8 @@ fn init() -> Model {
     Model {
         camera,
         nodes,
-        ghost_nodes: GhostNodes::None,
         highlighted_node,
+        ghosts: Ghosts::None,
     }
 }
 
@@ -436,15 +440,42 @@ fn render(rl: &mut RaylibHandle, thread: &RaylibThread, model: &Model, font: &Fo
 
     render_nodes(d, model, font);
 
-    render_ghost_nodes(d, &model.ghost_nodes);
+    render_ghosts(d, model);
 
-    let highlighted = model
-        .nodes
-        .get(&model.highlighted_node)
-        .expect("highlighted node should always exist");
+    let highlighted = model.nodes.get(&model.highlighted_node);
 
-    if highlighted.is_in_edit_mode() {
-        render_cursor(d, model.highlighted_node, highlighted);
+    if let Some(Node::Exec(exec_node)) = highlighted {
+        if exec_node.is_in_edit_mode() {
+            render_cursor(d, model.highlighted_node, exec_node);
+        }
+    } else {
+        render_dashed_node_border(d, model.highlighted_node, Color::WHITE)
+    }
+}
+
+fn render_ghosts(d: &mut impl RaylibDraw, model: &Model) {
+    match model.ghosts {
+        Ghosts::MovementGhosts => {
+            for dir in Dir::ALL {
+                let neighbor_loc = model.highlighted_node.neighbor(dir);
+                if !model.nodes.contains_key(&neighbor_loc) {
+                    render_dashed_node_border(d, neighbor_loc, GHOST_COLOR);
+                }
+            }
+        }
+
+        Ghosts::ArrowGhosts => {
+            for dir in Dir::ALL {
+                let neighbor_loc = model.highlighted_node.neighbor(dir);
+                if !model.nodes.contains_key(&neighbor_loc) {
+                    render_dashed_node_border(d, neighbor_loc, GHOST_COLOR);
+
+                    render_arrow(d, neighbor_loc.center(), dir, GHOST_COLOR);
+                }
+            }
+        }
+
+        Ghosts::None => {}
     }
 }
 
@@ -456,47 +487,55 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
             Color::GRAY
         };
 
-        render_node_border(d, *node_loc, line_color);
+        match node {
+            Node::Exec(exec_node) => {
+                render_node_border(d, *node_loc, line_color);
 
-        render_node_gizmos(d, *node_loc, &node.exec, font, line_color, Color::GRAY);
+                render_node_gizmos(d, *node_loc, &exec_node.exec, font, line_color, Color::GRAY);
 
-        render_node_text(d, node, node_loc, font);
+                render_node_text(d, exec_node, node_loc, font);
 
-        // the below two things should not be true at the same time if I did my homework
-        // (because a node with an error should not be able to begin executing)
-        // but this isn't reflected in the type system. If it were to happen though, it means there's a bug
-        debug_assert!(!(node.error.is_some() && node.exec.is_some()));
+                // the below two things should not be true at the same time if I did my homework
+                // (because a node with an error should not be able to begin executing)
+                // but this isn't reflected in the type system. If it were to happen though, it means there's a bug
+                debug_assert!(!(exec_node.error.is_some() && exec_node.exec.is_some()));
 
-        if let Some(error) = &node.error
-            && show_error(node_loc, node, &model.highlighted_node, error.line)
-        {
-            render_error_squiggle(d, *node_loc, &node.text, error.line);
-        }
+                if let Some(error) = &exec_node.error
+                    && show_error(node_loc, exec_node, &model.highlighted_node, error.line)
+                {
+                    render_error_squiggle(d, *node_loc, &exec_node.text, error.line);
+                }
 
-        if let Some(exec) = &node.exec
-            && !exec.code.is_empty()
-        {
-            if let NodeIO::Outbound(dir, value) = exec.io {
-                render_io_arrow(d, node_loc, dir, &value.to_string(), font);
-            } else if let NodeIO::Inbound(io_dir) = exec.io
-                && !neighbor_sending_io(&model.nodes, node_loc, io_dir)
-            {
-                render_io_arrow(d, &node_loc.neighbor(io_dir), io_dir.inverse(), "?", font);
+                if let Some(exec) = &exec_node.exec
+                    && !exec.code.is_empty()
+                {
+                    if let NodeIO::Outbound(dir, value) = exec.io {
+                        render_io_arrow(d, node_loc, dir, &value.to_string(), font);
+                    } else if let NodeIO::Inbound(io_dir) = exec.io
+                        && !neighbor_sending_io(&model.nodes, node_loc, io_dir)
+                    {
+                        render_io_arrow(d, &node_loc.neighbor(io_dir), io_dir.inverse(), "?", font);
+                    }
+                }
             }
         }
     }
 
     // error boxes are rendered in a second pass because they need to be rendered over top of everything else
     for (node_loc, node) in model.nodes.iter() {
-        if let Some(error) = &node.error
-            && show_error(node_loc, node, &model.highlighted_node, error.line)
+        if let Node::Exec(
+            exec_node @ ExecNode {
+                error: Some(error), ..
+            },
+        ) = &node
+            && show_error(node_loc, exec_node, &model.highlighted_node, error.line)
         {
             render_error_msg(d, node_loc, &error.problem, font);
         };
     }
 }
 
-fn render_node_text(d: &mut impl RaylibDraw, node: &Node, node_loc: &NodeCoord, font: &Font) {
+fn render_node_text(d: &mut impl RaylibDraw, node: &ExecNode, node_loc: &NodeCoord, font: &Font) {
     let highlight = node.exec.as_ref().and_then(|exec| {
         if exec.code.is_empty() {
             None
@@ -597,7 +636,7 @@ fn render_node_text_line(
 
 fn show_error(
     node_loc: &NodeCoord,
-    node: &Node,
+    node: &ExecNode,
     highlighted_node: &NodeCoord,
     error_line: u8,
 ) -> bool {
@@ -634,7 +673,7 @@ fn render_error_msg(
 }
 
 fn neighbor_sending_io(nodes: &Nodes, node_loc: &NodeCoord, io_dir: Dir) -> bool {
-    let Some(neighbor) = nodes.get(&node_loc.neighbor(io_dir)) else {
+    let Some(Node::Exec(neighbor)) = nodes.get(&node_loc.neighbor(io_dir)) else {
         return false;
     };
 
@@ -732,7 +771,7 @@ fn render_node_gizmos(
     }
 }
 
-fn render_cursor(d: &mut impl RaylibDraw, node_loc: NodeCoord, node: &Node) {
+fn render_cursor(d: &mut impl RaylibDraw, node_loc: NodeCoord, node: &ExecNode) {
     let (line, column) = line_column(&node.text, node.cursor);
 
     let x_offset = column as f32 * NODE_CHAR_WIDTH;
@@ -776,28 +815,6 @@ fn render_io_arrow(
     render_arrow(d, arrow_center, dir, Color::WHITE);
 
     render_centered_text(d, label, text_center, font, Color::WHITE);
-}
-
-fn render_ghost_nodes(d: &mut impl RaylibDraw, ghost_nodes: &GhostNodes) {
-    const GHOST_COLOR: Color = Color::GRAY;
-
-    match ghost_nodes {
-        GhostNodes::None => {}
-
-        GhostNodes::CreateGhosts(ghost_locs) => {
-            for node_loc in ghost_loc_coords(ghost_locs) {
-                render_dashed_node_border(d, node_loc, GHOST_COLOR);
-            }
-        }
-
-        GhostNodes::MoveGhosts(ghost_locs) => {
-            for (node_loc, direction) in ghost_loc_coords_directions(ghost_locs) {
-                render_dashed_node_border(d, node_loc, GHOST_COLOR);
-
-                render_arrow(d, node_loc.center(), direction, GHOST_COLOR);
-            }
-        }
-    }
 }
 
 fn render_dashed_line(
@@ -1035,16 +1052,17 @@ fn get_input(rl: &mut RaylibHandle) -> Input {
 }
 
 fn update(model: Model, input: Input) -> Option<Model> {
-    let (nodes, ghost_nodes, highlighted_node) = match handle_input(&model, &input) {
+    let (nodes, highlighted_node, ghosts) = match handle_input(&model, &input) {
         HandledInput::Exit => return None,
-        HandledInput::NoChange => (model.nodes, model.ghost_nodes, model.highlighted_node),
-        HandledInput::NodesChanged(nodes) => (nodes, model.ghost_nodes, model.highlighted_node),
-        HandledInput::ViewChanged(ghost_nodes, highlighted_node) => {
-            (model.nodes, ghost_nodes, highlighted_node)
-        }
-        HandledInput::EverythingChanged(nodes, ghost_nodes, highlighted_node) => {
-            (nodes, ghost_nodes, highlighted_node)
-        }
+        HandledInput::Changes {
+            highlighted,
+            nodes,
+            ghosts,
+        } => (
+            nodes.unwrap_or(model.nodes),
+            highlighted.unwrap_or(model.highlighted_node),
+            ghosts,
+        ),
     };
 
     let camera = update_camera(
@@ -1057,17 +1075,28 @@ fn update(model: Model, input: Input) -> Option<Model> {
     Some(Model {
         camera,
         nodes,
-        ghost_nodes,
         highlighted_node,
+        ghosts,
     })
 }
 
 enum HandledInput {
     Exit,
-    NoChange,
-    ViewChanged(GhostNodes, NodeCoord),
-    NodesChanged(Nodes),
-    EverythingChanged(Nodes, GhostNodes, NodeCoord),
+    Changes {
+        highlighted: Option<NodeCoord>,
+        nodes: Option<Nodes>,
+        ghosts: Ghosts,
+    },
+}
+
+impl HandledInput {
+    fn no_changes(ghosts: Ghosts) -> Self {
+        Self::Changes {
+            highlighted: None,
+            nodes: None,
+            ghosts,
+        }
+    }
 }
 
 fn handle_input(model: &Model, input: &Input) -> HandledInput {
@@ -1079,7 +1108,11 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             if let Some(updated_nodes) = stop_execution(&model.nodes, model.highlighted_node) {
                 let mut nodes = model.nodes.clone();
                 nodes.extend(updated_nodes);
-                HandledInput::NodesChanged(nodes)
+                HandledInput::Changes {
+                    highlighted: None,
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::None,
+                }
             } else {
                 HandledInput::Exit
             }
@@ -1093,10 +1126,16 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
         } => {
             if let Some(updated_nodes) = step_execution(&model.nodes, model.highlighted_node) {
                 let mut nodes = model.nodes.clone();
+
                 nodes.extend(updated_nodes);
-                HandledInput::NodesChanged(nodes)
+
+                HandledInput::Changes {
+                    highlighted: None,
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::None,
+                }
             } else {
-                HandledInput::NoChange
+                HandledInput::no_changes(Ghosts::None)
             }
         }
 
@@ -1110,15 +1149,20 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             // currently, the entire Nodes structure gets cloned when only one nodes text needs to change.
             let mut nodes = model.nodes.clone();
 
-            let highlighted_node = nodes
-                .get_mut(&model.highlighted_node)
-                .expect("the highlighted node should always exist");
+            let highlighted_node = nodes.get_mut(&model.highlighted_node);
 
-            if highlighted_node.is_in_edit_mode() {
-                highlighted_node.update_edit(&pressed);
-                HandledInput::NodesChanged(nodes)
+            if let Some(Node::Exec(exec_node)) = highlighted_node
+                && exec_node.is_in_edit_mode()
+            {
+                exec_node.update_edit(&pressed);
+
+                HandledInput::Changes {
+                    highlighted: None,
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::None,
+                }
             } else {
-                HandledInput::NoChange
+                HandledInput::no_changes(Ghosts::None)
             }
         }
 
@@ -1127,36 +1171,11 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             shift_held: false,
             pressed: Some(Pressed::Arrow(direction)),
             ..
-        } => {
-            let newly_highlighted_node = model.highlighted_node.neighbor(*direction);
-
-            let mut nodes = Cow::Borrowed(&model.nodes);
-
-            if nodes
-                .get(&model.highlighted_node)
-                .expect("the previously highlighted node should always exist")
-                .is_empty()
-            {
-                nodes.to_mut().remove(&model.highlighted_node);
-            }
-
-            // if there isn't already a node there, create an empty one
-            if nodes.get(&newly_highlighted_node).is_none() {
-                let prev_value = nodes.to_mut().insert(newly_highlighted_node, Node::empty());
-                assert!(prev_value.is_none());
-            }
-
-            let ghost_nodes =
-                GhostNodes::CreateGhosts(determine_ghost_node_locs(&nodes, newly_highlighted_node));
-
-            match nodes {
-                Cow::Owned(nodes) => {
-                    HandledInput::EverythingChanged(nodes, ghost_nodes, newly_highlighted_node)
-                }
-
-                Cow::Borrowed(_) => HandledInput::ViewChanged(ghost_nodes, newly_highlighted_node),
-            }
-        }
+        } => HandledInput::Changes {
+            highlighted: Some(model.highlighted_node.neighbor(*direction)),
+            nodes: None,
+            ghosts: Ghosts::MovementGhosts,
+        },
 
         Input {
             ctrl_held: true,
@@ -1167,10 +1186,11 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             let target = model.highlighted_node.neighbor(*direction);
 
             let target_is_empty = !model.nodes.contains_key(&target);
+
             let highlighted_is_moveable = model
                 .nodes
                 .get(&model.highlighted_node)
-                .is_some_and(Node::is_in_edit_mode);
+                .is_some_and(Node::is_moveable);
 
             if target_is_empty && highlighted_is_moveable {
                 let mut nodes = model.nodes.clone();
@@ -1179,11 +1199,13 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
 
                 nodes.insert(target, node_to_move);
 
-                let ghost_nodes = GhostNodes::MoveGhosts(determine_ghost_node_locs(&nodes, target));
-
-                HandledInput::EverythingChanged(nodes, ghost_nodes, target)
+                HandledInput::Changes {
+                    highlighted: Some(target),
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::ArrowGhosts,
+                }
             } else {
-                HandledInput::NoChange
+                HandledInput::no_changes(Ghosts::None)
             }
         }
 
@@ -1192,14 +1214,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             shift_held: false,
             pressed: None,
             ..
-        } => {
-            let ghost_nodes = GhostNodes::CreateGhosts(determine_ghost_node_locs(
-                &model.nodes,
-                model.highlighted_node,
-            ));
-
-            HandledInput::ViewChanged(ghost_nodes, model.highlighted_node)
-        }
+        } => HandledInput::no_changes(Ghosts::MovementGhosts),
 
         Input {
             ctrl_held: true,
@@ -1210,19 +1225,15 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             let highlighted_is_moveable = model
                 .nodes
                 .get(&model.highlighted_node)
-                .expect("highlighted node should always exist")
-                .is_in_edit_mode();
+                .is_some_and(Node::is_moveable);
 
-            let ghost_nodes = if highlighted_is_moveable {
-                GhostNodes::MoveGhosts(determine_ghost_node_locs(
-                    &model.nodes,
-                    model.highlighted_node,
-                ))
+            let ghosts = if highlighted_is_moveable {
+                Ghosts::ArrowGhosts
             } else {
-                GhostNodes::None
+                Ghosts::None
             };
 
-            HandledInput::ViewChanged(ghost_nodes, model.highlighted_node)
+            HandledInput::no_changes(ghosts)
         }
 
         Input {
@@ -1232,7 +1243,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             ctrl_held: true,
             pressed: Some(_),
             ..
-        } => HandledInput::ViewChanged(GhostNodes::None, model.highlighted_node),
+        } => HandledInput::no_changes(Ghosts::None),
     }
 }
 
@@ -1258,12 +1269,16 @@ fn stop_node_execution(
         return Err(new_nodes);
     }
 
-    if node.exec.is_some() {
-        node.exec = None;
-        new_nodes.insert(node_loc, node);
-        Ok(new_nodes)
-    } else {
-        Err(new_nodes)
+    match &mut node {
+        Node::Exec(exec_node) => {
+            if exec_node.exec.is_some() {
+                exec_node.exec = None;
+                new_nodes.insert(node_loc, node);
+                Ok(new_nodes)
+            } else {
+                Err(new_nodes)
+            }
+        }
     }
 }
 
@@ -1309,101 +1324,113 @@ fn step_node_execution(
         return Err(new_nodes);
     }
 
-    let Some(ref mut exec) = node.exec else {
-        if let Ok(exec) = NodeExec::init(&node.text)
-            && !exec.code.is_empty()
-        {
-            node.exec = Some(exec);
-            new_nodes.insert(node_loc, node);
-            return Ok(new_nodes);
-        } else {
-            new_nodes.insert(node_loc, node);
-            return Err(new_nodes);
-        }
-    };
+    match &mut node {
+        Node::Exec(exec_node) => {
+            let Some(ref mut exec) = exec_node.exec else {
+                if let Ok(exec) = NodeExec::init(&exec_node.text)
+                    && !exec.code.is_empty()
+                {
+                    exec_node.exec = Some(exec);
+                    new_nodes.insert(node_loc, node);
+                    return Ok(new_nodes);
+                } else {
+                    new_nodes.insert(node_loc, node);
+                    return Err(new_nodes);
+                }
+            };
 
-    if let NodeIO::Outbound(_, _) = exec.io {
-        new_nodes.try_insert(node_loc, node).unwrap();
-        return Ok(new_nodes);
-    }
+            if let NodeIO::Outbound(_, _) = exec.io {
+                new_nodes.try_insert(node_loc, node).unwrap();
+                return Ok(new_nodes);
+            }
 
-    match exec.code[exec.ip as usize].op {
-        Op::Mov(src, dst) => {
-            if let Some(value) = get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src) {
-                match dst {
-                    Dst::Acc => {
-                        exec.acc = value;
+            match exec.code[exec.ip as usize].op {
+                Op::Mov(src, dst) => {
+                    if let Some(value) =
+                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
+                    {
+                        match dst {
+                            Dst::Acc => {
+                                exec.acc = value;
+                                exec.inc_ip();
+                            }
+                            Dst::Dir(target_dir) => exec.io = NodeIO::Outbound(target_dir, value),
+                            Dst::Nil => exec.inc_ip(),
+                        }
+                    }
+                }
+                Op::Nop => exec.inc_ip(),
+                Op::Swp => {
+                    (exec.acc, exec.bak) = (exec.bak, exec.acc);
+                    exec.inc_ip();
+                }
+                Op::Sav => {
+                    exec.bak = exec.acc;
+                    exec.inc_ip();
+                }
+                Op::Add(src) => {
+                    if let Some(value) =
+                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
+                    {
+                        exec.acc = exec.acc.saturating_add(value);
                         exec.inc_ip();
                     }
-                    Dst::Dir(target_dir) => exec.io = NodeIO::Outbound(target_dir, value),
-                    Dst::Nil => exec.inc_ip(),
+                }
+                Op::Sub(src) => {
+                    if let Some(value) =
+                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
+                    {
+                        exec.acc = exec.acc.saturating_sub(value);
+                        exec.inc_ip();
+                    }
+                }
+                Op::Neg => {
+                    exec.acc = -exec.acc;
+                    exec.inc_ip();
+                }
+                Op::Jmp(target) => exec.ip = target,
+                Op::Jez(target) => {
+                    if exec.acc == 0 {
+                        exec.ip = target
+                    } else {
+                        exec.inc_ip();
+                    }
+                }
+                Op::Jnz(target) => {
+                    if exec.acc != 0 {
+                        exec.ip = target
+                    } else {
+                        exec.inc_ip();
+                    }
+                }
+                Op::Jgz(target) => {
+                    if exec.acc > 0 {
+                        exec.ip = target
+                    } else {
+                        exec.inc_ip();
+                    }
+                }
+                Op::Jlz(target) => {
+                    if exec.acc < 0 {
+                        exec.ip = target
+                    } else {
+                        exec.inc_ip();
+                    }
+                }
+                Op::Jro(src) => {
+                    if let Some(value) =
+                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
+                    {
+                        exec.jro(value);
+                    }
                 }
             }
-        }
-        Op::Nop => exec.inc_ip(),
-        Op::Swp => {
-            (exec.acc, exec.bak) = (exec.bak, exec.acc);
-            exec.inc_ip();
-        }
-        Op::Sav => {
-            exec.bak = exec.acc;
-            exec.inc_ip();
-        }
-        Op::Add(src) => {
-            if let Some(value) = get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src) {
-                exec.acc = exec.acc.saturating_add(value);
-                exec.inc_ip();
-            }
-        }
-        Op::Sub(src) => {
-            if let Some(value) = get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src) {
-                exec.acc = exec.acc.saturating_sub(value);
-                exec.inc_ip();
-            }
-        }
-        Op::Neg => {
-            exec.acc = -exec.acc;
-            exec.inc_ip();
-        }
-        Op::Jmp(target) => exec.ip = target,
-        Op::Jez(target) => {
-            if exec.acc == 0 {
-                exec.ip = target
-            } else {
-                exec.inc_ip();
-            }
-        }
-        Op::Jnz(target) => {
-            if exec.acc != 0 {
-                exec.ip = target
-            } else {
-                exec.inc_ip();
-            }
-        }
-        Op::Jgz(target) => {
-            if exec.acc > 0 {
-                exec.ip = target
-            } else {
-                exec.inc_ip();
-            }
-        }
-        Op::Jlz(target) => {
-            if exec.acc < 0 {
-                exec.ip = target
-            } else {
-                exec.inc_ip();
-            }
-        }
-        Op::Jro(src) => {
-            if let Some(value) = get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src) {
-                exec.jro(value);
-            }
+
+            new_nodes.try_insert(node_loc, node).unwrap();
+
+            Ok(new_nodes)
         }
     }
-
-    new_nodes.try_insert(node_loc, node).unwrap();
-
-    Ok(new_nodes)
 }
 
 fn get_src_value(
@@ -1420,22 +1447,28 @@ fn get_src_value(
             exec.io = NodeIO::Inbound(target_dir);
 
             let neighbor_loc = node_loc.neighbor(target_dir);
-            let mut neighbor = old_nodes.get(&neighbor_loc)?.clone();
-            let neighbor_exec = neighbor.exec.as_mut()?;
+            let neighbor = old_nodes.get(&neighbor_loc)?;
 
-            if let NodeIO::Outbound(neighbor_outbound_dir, value) = neighbor_exec.io
-                && neighbor_outbound_dir == target_dir.inverse()
-            {
-                neighbor_exec.inc_ip();
+            match neighbor {
+                Node::Exec(exec_node) => {
+                    let mut neighbor = exec_node.clone();
+                    let neighbor_exec = neighbor.exec.as_mut()?;
 
-                neighbor_exec.io = NodeIO::None;
-                exec.io = NodeIO::None;
+                    if let NodeIO::Outbound(neighbor_outbound_dir, value) = neighbor_exec.io
+                        && neighbor_outbound_dir == target_dir.inverse()
+                    {
+                        neighbor_exec.inc_ip();
 
-                new_nodes.insert(neighbor_loc, neighbor);
+                        neighbor_exec.io = NodeIO::None;
+                        exec.io = NodeIO::None;
 
-                Some(value)
-            } else {
-                None
+                        new_nodes.insert(neighbor_loc, Node::Exec(neighbor));
+
+                        Some(value)
+                    } else {
+                        None
+                    }
+                }
             }
         }
         Src::Nil => Some(0),
@@ -1464,25 +1497,6 @@ fn update_camera(
         offset,
         ..camera
     }
-}
-
-fn determine_ghost_node_locs(nodes: &Nodes, highlighted_node: NodeCoord) -> GhostLocs {
-    let NodeCoord { x, y } = highlighted_node;
-
-    let adjacent_nodes = [
-        NodeCoord::at(x, y - 1), // up
-        NodeCoord::at(x, y + 1), // down
-        NodeCoord::at(x - 1, y), // left
-        NodeCoord::at(x + 1, y), // right
-    ];
-
-    adjacent_nodes.map(|coord| {
-        if nodes.contains_key(&coord) {
-            None
-        } else {
-            Some(coord)
-        }
-    })
 }
 
 type Num = i8;
