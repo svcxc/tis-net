@@ -412,13 +412,11 @@ fn init() -> Model {
         "MOV ACC RIGHT#1",
         "MOV 0 ACC",
         "JMP RST",
-        "SAV#4",
-        "SUB LEFT",
+        "SUB LEFT#4",
         "JGZ SK1",
         "MOV LEFT ACC",
         "JMP RST",
-        "SK1:MOV LEFT NIL",
-        "SWP",
+        "SK1:ADD LEFT",
     ]));
 
     let nodes = HashMap::from([
