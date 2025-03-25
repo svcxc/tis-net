@@ -36,8 +36,10 @@ struct Model {
     nodes: Nodes,
     highlighted_node: NodeCoord,
     ghosts: Ghosts,
+    node_clipboard: Option<Node>,
 }
 
+#[derive(Clone, Copy)]
 enum Ghosts {
     MoveNodeGhosts,
     MoveViewGhosts,
@@ -430,6 +432,7 @@ fn init() -> Model {
         nodes,
         highlighted_node,
         ghosts: Ghosts::None,
+        node_clipboard: None,
     }
 }
 
@@ -1029,7 +1032,7 @@ fn render_dashed_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_
     );
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Input {
     ctrl_held: bool,
     shift_held: bool,
@@ -1038,7 +1041,7 @@ struct Input {
     mouse_wheel_move: f32,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Pressed {
     Esc,
     Tab,
@@ -1052,39 +1055,126 @@ enum Pressed {
 }
 
 fn get_input(rl: &mut RaylibHandle) -> Input {
-    let ctrl_held = rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL);
-    let shift_held = rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT);
+    let ctrl_held = rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+        || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL);
 
-    const GHETTO_HOME: KeyboardKey = KeyboardKey::KEY_KP_7;
-    const GHETTO_END: KeyboardKey = KeyboardKey::KEY_KP_1;
+    let shift_held =
+        rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT) || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
 
-    let pressed = if rl.is_key_pressed(KeyboardKey::KEY_TAB) {
-        Some(Pressed::Tab)
-    } else if rl.is_key_pressed(KeyboardKey::KEY_ESCAPE) {
-        Some(Pressed::Esc)
-    } else if rl.is_key_pressed(KeyboardKey::KEY_BACKSPACE) {
-        Some(Pressed::Backspace)
-    } else if rl.is_key_pressed(KeyboardKey::KEY_ENTER) {
-        Some(Pressed::Enter)
-    } else if rl.is_key_pressed(KeyboardKey::KEY_HOME) || rl.is_key_pressed(GHETTO_HOME) {
-        Some(Pressed::Home)
-    } else if rl.is_key_pressed(KeyboardKey::KEY_END) || rl.is_key_pressed(GHETTO_END) {
-        Some(Pressed::End)
-    } else if rl.is_key_pressed(KeyboardKey::KEY_DELETE) {
-        Some(Pressed::Delete)
-    } else if rl.is_key_pressed(KeyboardKey::KEY_UP) {
-        Some(Pressed::Arrow(Dir::Up))
-    } else if rl.is_key_pressed(KeyboardKey::KEY_DOWN) {
-        Some(Pressed::Arrow(Dir::Down))
-    } else if rl.is_key_pressed(KeyboardKey::KEY_LEFT) {
-        Some(Pressed::Arrow(Dir::Left))
-    } else if rl.is_key_pressed(KeyboardKey::KEY_RIGHT) {
-        Some(Pressed::Arrow(Dir::Right))
-    } else if let Some(char) = rl.get_char_pressed() {
-        Some(Pressed::Char(char.to_ascii_uppercase()))
-    } else {
-        None
-    };
+    let unbound = None;
+    let handled_elsewhere = None;
+
+    let pressed = rl.get_key_pressed().and_then(|key| match key {
+        KeyboardKey::KEY_NULL => None,
+        KeyboardKey::KEY_APOSTROPHE => Some(Pressed::Char('\'')),
+        KeyboardKey::KEY_COMMA => Some(Pressed::Char(',')),
+        KeyboardKey::KEY_MINUS => Some(Pressed::Char('-')),
+        KeyboardKey::KEY_PERIOD => Some(Pressed::Char('.')),
+        KeyboardKey::KEY_SLASH => Some(Pressed::Char('/')),
+        KeyboardKey::KEY_ZERO => Some(Pressed::Char('0')),
+        KeyboardKey::KEY_ONE => Some(Pressed::Char('1')),
+        KeyboardKey::KEY_TWO => Some(Pressed::Char('2')),
+        KeyboardKey::KEY_THREE => Some(Pressed::Char('3')),
+        KeyboardKey::KEY_FOUR => Some(Pressed::Char('4')),
+        KeyboardKey::KEY_FIVE => Some(Pressed::Char('5')),
+        KeyboardKey::KEY_SIX => Some(Pressed::Char('6')),
+        KeyboardKey::KEY_SEVEN => Some(Pressed::Char('7')),
+        KeyboardKey::KEY_EIGHT => Some(Pressed::Char('8')),
+        KeyboardKey::KEY_NINE => Some(Pressed::Char('9')),
+        KeyboardKey::KEY_SEMICOLON => Some(Pressed::Char(';')),
+        KeyboardKey::KEY_EQUAL => Some(Pressed::Char('=')),
+        KeyboardKey::KEY_A => Some(Pressed::Char('A')),
+        KeyboardKey::KEY_B => Some(Pressed::Char('B')),
+        KeyboardKey::KEY_C => Some(Pressed::Char('C')),
+        KeyboardKey::KEY_D => Some(Pressed::Char('D')),
+        KeyboardKey::KEY_E => Some(Pressed::Char('E')),
+        KeyboardKey::KEY_F => Some(Pressed::Char('F')),
+        KeyboardKey::KEY_G => Some(Pressed::Char('G')),
+        KeyboardKey::KEY_H => Some(Pressed::Char('H')),
+        KeyboardKey::KEY_I => Some(Pressed::Char('I')),
+        KeyboardKey::KEY_J => Some(Pressed::Char('J')),
+        KeyboardKey::KEY_K => Some(Pressed::Char('K')),
+        KeyboardKey::KEY_L => Some(Pressed::Char('L')),
+        KeyboardKey::KEY_M => Some(Pressed::Char('M')),
+        KeyboardKey::KEY_N => Some(Pressed::Char('N')),
+        KeyboardKey::KEY_O => Some(Pressed::Char('O')),
+        KeyboardKey::KEY_P => Some(Pressed::Char('P')),
+        KeyboardKey::KEY_Q => Some(Pressed::Char('Q')),
+        KeyboardKey::KEY_R => Some(Pressed::Char('R')),
+        KeyboardKey::KEY_S => Some(Pressed::Char('S')),
+        KeyboardKey::KEY_T => Some(Pressed::Char('T')),
+        KeyboardKey::KEY_U => Some(Pressed::Char('U')),
+        KeyboardKey::KEY_V => Some(Pressed::Char('V')),
+        KeyboardKey::KEY_W => Some(Pressed::Char('W')),
+        KeyboardKey::KEY_X => Some(Pressed::Char('X')),
+        KeyboardKey::KEY_Y => Some(Pressed::Char('Y')),
+        KeyboardKey::KEY_Z => Some(Pressed::Char('Z')),
+        KeyboardKey::KEY_LEFT_BRACKET => Some(Pressed::Char('(')),
+        KeyboardKey::KEY_BACKSLASH => Some(Pressed::Char('\\')),
+        KeyboardKey::KEY_RIGHT_BRACKET => Some(Pressed::Char('0')),
+        KeyboardKey::KEY_GRAVE => Some(Pressed::Char('`')),
+        KeyboardKey::KEY_SPACE => Some(Pressed::Char(' ')),
+        KeyboardKey::KEY_ESCAPE => Some(Pressed::Esc),
+        KeyboardKey::KEY_ENTER => Some(Pressed::Enter),
+        KeyboardKey::KEY_TAB => Some(Pressed::Tab),
+        KeyboardKey::KEY_BACKSPACE => Some(Pressed::Backspace),
+        KeyboardKey::KEY_INSERT => unbound,
+        KeyboardKey::KEY_DELETE => Some(Pressed::Delete),
+        KeyboardKey::KEY_RIGHT => Some(Pressed::Arrow(Dir::Right)),
+        KeyboardKey::KEY_LEFT => Some(Pressed::Arrow(Dir::Left)),
+        KeyboardKey::KEY_DOWN => Some(Pressed::Arrow(Dir::Down)),
+        KeyboardKey::KEY_UP => Some(Pressed::Arrow(Dir::Up)),
+        KeyboardKey::KEY_PAGE_UP => unbound,
+        KeyboardKey::KEY_PAGE_DOWN => unbound,
+        KeyboardKey::KEY_HOME => Some(Pressed::Home),
+        KeyboardKey::KEY_END => Some(Pressed::End),
+        KeyboardKey::KEY_CAPS_LOCK => unbound,
+        KeyboardKey::KEY_SCROLL_LOCK => unbound,
+        KeyboardKey::KEY_NUM_LOCK => unbound,
+        KeyboardKey::KEY_PRINT_SCREEN => unbound,
+        KeyboardKey::KEY_PAUSE => unbound,
+        KeyboardKey::KEY_F1 => unbound,
+        KeyboardKey::KEY_F2 => unbound,
+        KeyboardKey::KEY_F3 => unbound,
+        KeyboardKey::KEY_F4 => unbound,
+        KeyboardKey::KEY_F5 => unbound,
+        KeyboardKey::KEY_F6 => unbound,
+        KeyboardKey::KEY_F7 => unbound,
+        KeyboardKey::KEY_F8 => unbound,
+        KeyboardKey::KEY_F9 => unbound,
+        KeyboardKey::KEY_F10 => unbound,
+        KeyboardKey::KEY_F11 => unbound,
+        KeyboardKey::KEY_F12 => unbound,
+        KeyboardKey::KEY_LEFT_SHIFT => handled_elsewhere,
+        KeyboardKey::KEY_LEFT_CONTROL => handled_elsewhere,
+        KeyboardKey::KEY_LEFT_ALT => unbound,
+        KeyboardKey::KEY_LEFT_SUPER => unbound,
+        KeyboardKey::KEY_RIGHT_SHIFT => handled_elsewhere,
+        KeyboardKey::KEY_RIGHT_CONTROL => handled_elsewhere,
+        KeyboardKey::KEY_RIGHT_ALT => unbound,
+        KeyboardKey::KEY_RIGHT_SUPER => unbound,
+        KeyboardKey::KEY_KB_MENU => unbound,
+        KeyboardKey::KEY_KP_0 => unbound,
+        KeyboardKey::KEY_KP_1 => Some(Pressed::End),
+        KeyboardKey::KEY_KP_2 => unbound,
+        KeyboardKey::KEY_KP_3 => unbound,
+        KeyboardKey::KEY_KP_4 => unbound,
+        KeyboardKey::KEY_KP_5 => unbound,
+        KeyboardKey::KEY_KP_6 => unbound,
+        KeyboardKey::KEY_KP_7 => Some(Pressed::Home),
+        KeyboardKey::KEY_KP_8 => unbound,
+        KeyboardKey::KEY_KP_9 => unbound,
+        KeyboardKey::KEY_KP_DECIMAL => unbound,
+        KeyboardKey::KEY_KP_DIVIDE => unbound,
+        KeyboardKey::KEY_KP_MULTIPLY => unbound,
+        KeyboardKey::KEY_KP_SUBTRACT => unbound,
+        KeyboardKey::KEY_KP_ADD => unbound,
+        KeyboardKey::KEY_KP_ENTER => unbound,
+        KeyboardKey::KEY_KP_EQUAL => unbound,
+        KeyboardKey::KEY_BACK => Some(Pressed::Backspace),
+        KeyboardKey::KEY_VOLUME_UP => unbound,
+        KeyboardKey::KEY_VOLUME_DOWN => unbound,
+    });
 
     Input {
         ctrl_held,
@@ -1096,16 +1186,18 @@ fn get_input(rl: &mut RaylibHandle) -> Input {
 }
 
 fn update(model: Model, input: Input) -> Option<Model> {
-    let (nodes, highlighted_node, ghosts) = match handle_input(&model, &input) {
+    let (nodes, highlighted_node, ghosts, node_clipboard) = match handle_input(&model, &input) {
         HandledInput::Exit => return None,
         HandledInput::Changes {
             highlighted,
             nodes,
             ghosts,
+            node_clipboard,
         } => (
             nodes.unwrap_or(model.nodes),
-            highlighted.unwrap_or(model.highlighted_node),
+            highlighted,
             ghosts,
+            node_clipboard,
         ),
     };
 
@@ -1121,26 +1213,18 @@ fn update(model: Model, input: Input) -> Option<Model> {
         nodes,
         highlighted_node,
         ghosts,
+        node_clipboard,
     })
 }
 
 enum HandledInput {
     Exit,
     Changes {
-        highlighted: Option<NodeCoord>,
+        highlighted: NodeCoord,
         nodes: Option<Nodes>,
         ghosts: Ghosts,
+        node_clipboard: Option<Node>,
     },
-}
-
-impl HandledInput {
-    fn no_changes(ghosts: Ghosts) -> Self {
-        Self::Changes {
-            highlighted: None,
-            nodes: None,
-            ghosts,
-        }
-    }
 }
 
 fn handle_input(model: &Model, input: &Input) -> HandledInput {
@@ -1155,9 +1239,10 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 nodes.extend(updated_nodes);
 
                 HandledInput::Changes {
-                    highlighted: None,
+                    highlighted: model.highlighted_node,
                     nodes: Some(nodes),
                     ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
                 }
             } else {
                 HandledInput::Exit
@@ -1176,12 +1261,103 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 nodes.remove(&model.highlighted_node);
 
                 HandledInput::Changes {
-                    highlighted: None,
+                    highlighted: model.highlighted_node,
                     nodes: Some(nodes),
                     ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
                 }
             } else {
-                HandledInput::no_changes(Ghosts::None)
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: model.ghosts,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
+            }
+        }
+
+        Input {
+            ctrl_held: true,
+            pressed: Some(Pressed::Char('C')),
+            ..
+        } => {
+            if let Some(node) = model.nodes.get(&model.highlighted_node)
+                && node.is_inert()
+            {
+                println!("copied!");
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: Ghosts::None,
+                    node_clipboard: Some(node.clone()),
+                }
+            } else {
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: model.ghosts,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
+            }
+        }
+
+        Input {
+            ctrl_held: true,
+            pressed: Some(Pressed::Char('X')),
+            ..
+        } => {
+            if let Some(node) = model.nodes.get(&model.highlighted_node)
+                && node.is_inert()
+            {
+                println!("cut!");
+                let mut nodes = model.nodes.clone();
+
+                let node = nodes.remove(&model.highlighted_node).unwrap();
+
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::None,
+                    node_clipboard: Some(node),
+                }
+            } else {
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: model.ghosts,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
+            }
+        }
+
+        Input {
+            ctrl_held: true,
+            pressed: Some(Pressed::Char('V')),
+            ..
+        } => {
+            if let Some(copied_node) = &model.node_clipboard
+                && model.nodes.get(&model.highlighted_node).is_none()
+            {
+                println!("pasted!");
+                let mut nodes = model.nodes.clone();
+
+                let result = nodes.insert(model.highlighted_node, copied_node.clone());
+
+                debug_assert!(result.is_none());
+
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: Some(nodes),
+                    ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
+            } else {
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: model.ghosts,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
             }
         }
 
@@ -1197,12 +1373,18 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 nodes.extend(updated_nodes);
 
                 HandledInput::Changes {
-                    highlighted: None,
+                    highlighted: model.highlighted_node,
                     nodes: Some(nodes),
                     ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
                 }
             } else {
-                HandledInput::no_changes(Ghosts::None)
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
             }
         }
 
@@ -1229,9 +1411,10 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 nodes.insert(model.highlighted_node, Node::Exec(exec_node));
 
                 HandledInput::Changes {
-                    highlighted: None,
+                    highlighted: model.highlighted_node,
                     nodes: Some(nodes),
                     ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
                 }
             } else if highlighted_node.is_none() && pressed == &Pressed::Char('E') {
                 let mut nodes = model.nodes.clone();
@@ -1239,12 +1422,18 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 nodes.insert(model.highlighted_node, Node::empty_exec());
 
                 HandledInput::Changes {
-                    highlighted: None,
+                    highlighted: model.highlighted_node,
                     nodes: Some(nodes),
                     ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
                 }
             } else {
-                HandledInput::no_changes(Ghosts::None)
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: Ghosts::None,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
             }
         }
 
@@ -1254,9 +1443,10 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             pressed: Some(Pressed::Arrow(direction)),
             ..
         } => HandledInput::Changes {
-            highlighted: Some(model.highlighted_node.neighbor(*direction)),
+            highlighted: model.highlighted_node.neighbor(*direction),
             nodes: None,
             ghosts: Ghosts::MoveViewGhosts,
+            node_clipboard: model.node_clipboard.clone(),
         },
 
         Input {
@@ -1282,12 +1472,18 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 nodes.insert(target, node_to_move);
 
                 HandledInput::Changes {
-                    highlighted: Some(target),
+                    highlighted: target,
                     nodes: Some(nodes),
                     ghosts: Ghosts::MoveNodeGhosts,
+                    node_clipboard: model.node_clipboard.clone(),
                 }
             } else {
-                HandledInput::no_changes(Ghosts::None)
+                HandledInput::Changes {
+                    highlighted: model.highlighted_node,
+                    nodes: None,
+                    ghosts: Ghosts::MoveNodeGhosts,
+                    node_clipboard: model.node_clipboard.clone(),
+                }
             }
         }
 
@@ -1296,7 +1492,12 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             shift_held: false,
             pressed: None,
             ..
-        } => HandledInput::no_changes(Ghosts::MoveViewGhosts),
+        } => HandledInput::Changes {
+            highlighted: model.highlighted_node,
+            nodes: None,
+            ghosts: Ghosts::MoveViewGhosts,
+            node_clipboard: model.node_clipboard.clone(),
+        },
 
         Input {
             ctrl_held: true,
@@ -1315,7 +1516,12 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 Ghosts::None
             };
 
-            HandledInput::no_changes(ghosts)
+            HandledInput::Changes {
+                highlighted: model.highlighted_node,
+                nodes: None,
+                ghosts,
+                node_clipboard: model.node_clipboard.clone(),
+            }
         }
 
         Input {
@@ -1325,7 +1531,12 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             ctrl_held: true,
             pressed: Some(_),
             ..
-        } => HandledInput::no_changes(Ghosts::None),
+        } => HandledInput::Changes {
+            highlighted: model.highlighted_node,
+            nodes: None,
+            ghosts: Ghosts::None,
+            node_clipboard: model.node_clipboard.clone(),
+        },
     }
 }
 
