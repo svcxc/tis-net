@@ -952,21 +952,6 @@ fn render_double_arrow(d: &mut impl RaylibDraw, center: Vector2, direction: Dir,
     );
 }
 
-fn render_plus(d: &mut impl RaylibDraw, center: Vector2, color: Color) {
-    d.draw_line_ex(
-        center + Vector2::new(-NODE_LINE_HEIGHT, 0.0),
-        center + Vector2::new(NODE_LINE_HEIGHT, 0.0),
-        LINE_THICKNESS,
-        color,
-    );
-    d.draw_line_ex(
-        center + Vector2::new(0.0, -NODE_LINE_HEIGHT),
-        center + Vector2::new(0.0, NODE_LINE_HEIGHT),
-        LINE_THICKNESS,
-        color,
-    );
-}
-
 fn render_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_color: Color) {
     d.draw_line_ex(
         node_loc.top_left_corner(),
