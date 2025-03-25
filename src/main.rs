@@ -39,8 +39,8 @@ struct Model {
 }
 
 enum Ghosts {
-    ArrowGhosts,
-    MovementGhosts,
+    MoveNodeGhosts,
+    MoveViewGhosts,
     None,
 }
 
@@ -453,28 +453,31 @@ fn render(rl: &mut RaylibHandle, thread: &RaylibThread, model: &Model, font: &Fo
             render_cursor(d, model.highlighted_node, exec_node);
         }
     } else {
-        render_dashed_node_border(d, model.highlighted_node, Color::WHITE)
+        render_dashed_node_border(d, model.highlighted_node, Color::GRAY);
+        // render_plus(d, model.highlighted_node.center(), Color::GRAY);
     }
 }
 
 fn render_ghosts(d: &mut impl RaylibDraw, model: &Model) {
     match model.ghosts {
-        Ghosts::MovementGhosts => {
-            for dir in Dir::ALL {
-                let neighbor_loc = model.highlighted_node.neighbor(dir);
-                if !model.nodes.contains_key(&neighbor_loc) {
-                    render_dashed_node_border(d, neighbor_loc, GHOST_COLOR);
-                }
-            }
-        }
-
-        Ghosts::ArrowGhosts => {
+        Ghosts::MoveViewGhosts => {
             for dir in Dir::ALL {
                 let neighbor_loc = model.highlighted_node.neighbor(dir);
                 if !model.nodes.contains_key(&neighbor_loc) {
                     render_dashed_node_border(d, neighbor_loc, GHOST_COLOR);
 
                     render_arrow(d, neighbor_loc.center(), dir, GHOST_COLOR);
+                }
+            }
+        }
+
+        Ghosts::MoveNodeGhosts => {
+            for dir in Dir::ALL {
+                let neighbor_loc = model.highlighted_node.neighbor(dir);
+                if !model.nodes.contains_key(&neighbor_loc) {
+                    render_dashed_node_border(d, neighbor_loc, GHOST_COLOR);
+
+                    render_double_arrow(d, neighbor_loc.center(), dir, GHOST_COLOR);
                 }
             }
         }
@@ -913,6 +916,57 @@ fn render_arrow(d: &mut impl RaylibDraw, center: Vector2, direction: Dir, color:
     d.draw_line_ex(arrow_tip, arrow_right_wing, LINE_THICKNESS, color);
 }
 
+fn render_double_arrow(d: &mut impl RaylibDraw, center: Vector2, direction: Dir, color: Color) {
+    let dir_vec = direction.normalized();
+
+    let half_arrow_stem = dir_vec.scale_by(NODE_LINE_HEIGHT);
+
+    let arrow_tip = center + half_arrow_stem;
+    let arrow_base = center - half_arrow_stem;
+
+    let arrow_left_wing = center
+        + dir_vec
+            .scale_by(NODE_LINE_HEIGHT)
+            .rotated((1.0 / 4.0) * f32::consts::TAU);
+
+    let arrow_right_wing = center
+        + dir_vec
+            .scale_by(NODE_LINE_HEIGHT)
+            .rotated(-(1.0 / 4.0) * f32::consts::TAU);
+
+    d.draw_line_ex(arrow_base, arrow_tip, LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_tip, arrow_left_wing, LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_tip, arrow_right_wing, LINE_THICKNESS, color);
+
+    d.draw_line_ex(
+        arrow_tip,
+        arrow_left_wing + half_arrow_stem,
+        LINE_THICKNESS,
+        color,
+    );
+    d.draw_line_ex(
+        arrow_tip,
+        arrow_right_wing + half_arrow_stem,
+        LINE_THICKNESS,
+        color,
+    );
+}
+
+fn render_plus(d: &mut impl RaylibDraw, center: Vector2, color: Color) {
+    d.draw_line_ex(
+        center + Vector2::new(-NODE_LINE_HEIGHT, 0.0),
+        center + Vector2::new(NODE_LINE_HEIGHT, 0.0),
+        LINE_THICKNESS,
+        color,
+    );
+    d.draw_line_ex(
+        center + Vector2::new(0.0, -NODE_LINE_HEIGHT),
+        center + Vector2::new(0.0, NODE_LINE_HEIGHT),
+        LINE_THICKNESS,
+        color,
+    );
+}
+
 fn render_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_color: Color) {
     d.draw_line_ex(
         node_loc.top_left_corner(),
@@ -1196,7 +1250,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                     nodes: Some(nodes),
                     ghosts: Ghosts::None,
                 }
-            } else if highlighted_node.is_none() && pressed == &Pressed::Char('A') {
+            } else if highlighted_node.is_none() && pressed == &Pressed::Char('E') {
                 let mut nodes = model.nodes.clone();
 
                 nodes.insert(model.highlighted_node, Node::empty_exec());
@@ -1219,7 +1273,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
         } => HandledInput::Changes {
             highlighted: Some(model.highlighted_node.neighbor(*direction)),
             nodes: None,
-            ghosts: Ghosts::MovementGhosts,
+            ghosts: Ghosts::MoveViewGhosts,
         },
 
         Input {
@@ -1247,7 +1301,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 HandledInput::Changes {
                     highlighted: Some(target),
                     nodes: Some(nodes),
-                    ghosts: Ghosts::ArrowGhosts,
+                    ghosts: Ghosts::MoveNodeGhosts,
                 }
             } else {
                 HandledInput::no_changes(Ghosts::None)
@@ -1259,7 +1313,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
             shift_held: false,
             pressed: None,
             ..
-        } => HandledInput::no_changes(Ghosts::MovementGhosts),
+        } => HandledInput::no_changes(Ghosts::MoveViewGhosts),
 
         Input {
             ctrl_held: true,
@@ -1273,7 +1327,7 @@ fn handle_input(model: &Model, input: &Input) -> HandledInput {
                 .is_some_and(Node::is_inert);
 
             let ghosts = if highlighted_is_moveable {
-                Ghosts::ArrowGhosts
+                Ghosts::MoveNodeGhosts
             } else {
                 Ghosts::None
             };
