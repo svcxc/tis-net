@@ -72,8 +72,43 @@ impl Node {
         Self::Exec(ExecNode::empty())
     }
 
-    fn exec_with_text(text: &str) -> Self {
-        Self::Exec(ExecNode::with_text(text))
+    fn exec_with_text(text: &str) -> Option<Self> {
+        let text = ArrayString::from(text).ok()?;
+
+        if !validate(&text) {
+            return None;
+        }
+
+        let mut exec_node = ExecNode {
+            text,
+            cursor: 0,
+            error: None,
+            exec: None,
+        };
+
+        exec_node.update_error();
+
+        Some(Node::Exec(exec_node))
+    }
+
+    fn exec_with_lines<'str>(lines: impl IntoIterator<Item = &'str str>) -> Option<Self> {
+        let text =
+            ArrayString::from(&lines.into_iter().intersperse("\n").collect::<String>()).ok()?;
+
+        if !validate(&text) {
+            return None;
+        }
+
+        let mut exec_node = ExecNode {
+            text,
+            cursor: 0,
+            error: None,
+            exec: None,
+        };
+
+        exec_node.update_error();
+
+        Some(Node::Exec(exec_node))
     }
 }
 
@@ -93,23 +128,6 @@ impl ExecNode {
             error: None,
             exec: None,
         }
-    }
-
-    fn with_text(str: &str) -> Self {
-        let text = ArrayString::from(str).unwrap();
-
-        assert!(validate(&text));
-
-        let mut new = Self {
-            text,
-            cursor: 0,
-            error: None,
-            exec: None,
-        };
-
-        new.update_error();
-
-        new
     }
 
     fn is_in_edit_mode(&self) -> bool {
@@ -375,19 +393,16 @@ fn init() -> State {
         zoom: 0.85,
     };
 
-    fn combine<'str>(lines: impl IntoIterator<Item = &'str str>) -> String {
-        lines.into_iter().intersperse("\n").collect()
-    }
-
-    let left = Node::exec_with_text(&combine([
+    let left = Node::exec_with_lines([
         "MOV 10 RIGHT",
         "MOV 1 RIGHT",
         "MOV 100 RIGHT",
         "MOV 0 RIGHT",
         "JRO 0",
-    ]));
+    ])
+    .unwrap();
 
-    let middle = Node::exec_with_text(&combine([
+    let middle = Node::exec_with_lines([
         "RST:MOV LEFT ACC",
         "JNZ SK1",
         "MOV 1 RIGHT",
@@ -395,9 +410,10 @@ fn init() -> State {
         "SK1:MOV 4 RIGHT",
         "MOV ACC RIGHT",
         "MOV ACC RIGHT",
-    ]));
+    ])
+    .unwrap();
 
-    let right = Node::exec_with_text(&combine([
+    let right = Node::exec_with_lines([
         "RST:JRO LEFT",
         "MOV ACC RIGHT#1",
         "MOV 0 ACC",
@@ -407,7 +423,8 @@ fn init() -> State {
         "MOV LEFT ACC",
         "JMP RST",
         "SK1:ADD LEFT",
-    ]));
+    ])
+    .unwrap();
 
     let nodes = HashMap::from([
         (highlighted_node.neighbor(Dir::Left), left),
@@ -1356,6 +1373,70 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
+        (Modifiers::Ctrl, Pressed::Char('O')) => {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("load TIS workspace from file")
+                .add_filter("TIS workspace", &["toml"])
+                .pick_file()
+            {
+                match std::fs::read_to_string(path) {
+                    Ok(toml) => match parse_toml(&toml) {
+                        Ok((nodes, highlighted_node)) => Some(Model {
+                            nodes,
+                            highlighted_node,
+                            ghosts,
+                            ..model
+                        }),
+
+                        Err(import_err) => {
+                            let origin = NodeCoord::at(0, 0);
+                            let description = match import_err {
+                                ImportErr::InvalidToml => "# INVALID TOML",
+                                ImportErr::InvalidCoord => "# INVALID COORD",
+                                ImportErr::NodeTextDoesntFit => "# CODE DOESN'T FIT",
+                                ImportErr::InvalidRhs => "# INVALID RHS",
+                                ImportErr::DuplicateCoord => "# DUPLICATE COORD",
+                                ImportErr::InvalidHighlightRhs => "# INVALID LOC",
+                            };
+
+                            let node =
+                                Node::exec_with_lines(["## ERROR", "", description]).unwrap();
+
+                            let nodes = Nodes::from([(origin, node)]);
+
+                            Some(Model {
+                                nodes,
+                                ghosts,
+                                ..model
+                            })
+                        }
+                    },
+
+                    Err(_) => {
+                        let origin = NodeCoord::at(0, 0);
+
+                        let node = Node::exec_with_lines([
+                            "## ERROR",
+                            "",
+                            "# COULD NOT OPEN",
+                            "# SPECIFIED FILE",
+                        ])
+                        .unwrap();
+
+                        let nodes = Nodes::from([(origin, node)]);
+
+                        Some(Model {
+                            nodes,
+                            ghosts,
+                            ..model
+                        })
+                    }
+                }
+            } else {
+                Some(Model { ghosts, ..model })
+            }
+        }
+
         (Modifiers::None, Pressed::Char(char)) => {
             let mut nodes = model.nodes;
 
@@ -1989,4 +2070,74 @@ fn expect_dst<'txt>(
             line,
         }),
     }
+}
+
+enum ImportErr {
+    InvalidToml,
+    InvalidCoord,
+    NodeTextDoesntFit,
+    InvalidRhs,
+    DuplicateCoord,
+    InvalidHighlightRhs,
+}
+
+use toml::{Table, Value};
+
+fn parse_toml(toml: &str) -> Result<(Nodes, NodeCoord), ImportErr> {
+    let table: Table = match toml::from_str(toml) {
+        Ok(table) => table,
+        Err(_) => return Err(ImportErr::InvalidToml),
+    };
+
+    let mut nodes = Nodes::new();
+    let mut highlighted = None;
+
+    for (key, value) in table {
+        if &key == "highlighted" {
+            if let Value::String(coord) = value {
+                highlighted = Some(parse_coord(&coord)?);
+            } else {
+                return Err(ImportErr::InvalidHighlightRhs);
+            }
+        } else {
+            let (node_loc, node) = parse_node(&key, value)?;
+
+            if nodes.try_insert(node_loc, node).is_err() {
+                return Err(ImportErr::DuplicateCoord);
+            };
+        }
+    }
+
+    Ok((nodes, highlighted.unwrap_or(NodeCoord::at(0, 0))))
+}
+
+fn parse_node(key: &str, value: Value) -> Result<(NodeCoord, Node), ImportErr> {
+    let node_loc = parse_coord(key)?;
+
+    let node = match value {
+        Value::String(text) => Node::exec_with_text(&text).ok_or(ImportErr::NodeTextDoesntFit)?,
+        _ => return Err(ImportErr::InvalidRhs),
+    };
+
+    Ok((node_loc, node))
+}
+
+fn parse_coord(str: &str) -> Result<NodeCoord, ImportErr> {
+    let mut coords = str.split(',');
+
+    let x = coords
+        .next()
+        .ok_or(ImportErr::InvalidCoord)?
+        .trim()
+        .parse()
+        .map_err(|_| ImportErr::InvalidCoord)?;
+
+    let y = coords
+        .next()
+        .ok_or(ImportErr::InvalidCoord)?
+        .trim()
+        .parse()
+        .map_err(|_| ImportErr::InvalidCoord)?;
+
+    Ok(NodeCoord::at(x, y))
 }
