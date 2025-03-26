@@ -1375,7 +1375,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
         (Modifiers::Ctrl, Pressed::Char('O')) => {
             if let Some(path) = rfd::FileDialog::new()
-                .set_title("load TIS workspace from file")
+                .set_title("Load TIS workspace from file")
                 .add_filter("TIS workspace", &["toml"])
                 .pick_file()
             {
@@ -1430,6 +1430,28 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                             ghosts,
                             ..model
                         })
+                    }
+                }
+            } else {
+                Some(Model { ghosts, ..model })
+            }
+        }
+
+        (Modifiers::Ctrl, Pressed::Char('S')) => {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Save TIS workspace to file")
+                .add_filter("TIS workspace", &["toml"])
+                .set_file_name("my_tis_workspace.toml")
+                .save_file()
+            {
+                let toml = serialize_toml(&model.nodes, Some(model.highlighted_node));
+
+                match std::fs::write(path, toml) {
+                    Ok(()) => Some(Model { ghosts, ..model }),
+
+                    Err(err) => {
+                        println!("io error while saving file: {:?}", err);
+                        Some(Model { ghosts, ..model })
                     }
                 }
             } else {
@@ -2083,6 +2105,8 @@ enum ImportErr {
 
 use toml::{Table, Value};
 
+const HIGHLIGHTED_NODE_KEY: &'static str = "highlighted";
+
 fn parse_toml(toml: &str) -> Result<(Nodes, NodeCoord), ImportErr> {
     let table: Table = match toml::from_str(toml) {
         Ok(table) => table,
@@ -2093,7 +2117,7 @@ fn parse_toml(toml: &str) -> Result<(Nodes, NodeCoord), ImportErr> {
     let mut highlighted = None;
 
     for (key, value) in table {
-        if &key == "highlighted" {
+        if &key == HIGHLIGHTED_NODE_KEY {
             if let Value::String(coord) = value {
                 highlighted = Some(parse_coord(&coord)?);
             } else {
@@ -2115,7 +2139,9 @@ fn parse_node(key: &str, value: Value) -> Result<(NodeCoord, Node), ImportErr> {
     let node_loc = parse_coord(key)?;
 
     let node = match value {
-        Value::String(text) => Node::exec_with_text(&text).ok_or(ImportErr::NodeTextDoesntFit)?,
+        Value::String(text) => {
+            Node::exec_with_text(text.trim_end()).ok_or(ImportErr::NodeTextDoesntFit)?
+        }
         _ => return Err(ImportErr::InvalidRhs),
     };
 
@@ -2140,4 +2166,47 @@ fn parse_coord(str: &str) -> Result<NodeCoord, ImportErr> {
         .map_err(|_| ImportErr::InvalidCoord)?;
 
     Ok(NodeCoord::at(x, y))
+}
+
+fn fmt_coord(node_loc: &NodeCoord) -> String {
+    format!("{}, {}", node_loc.x, node_loc.y)
+}
+
+// fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> Table {
+//     let mut table = Table::from_iter(nodes.iter().map(|(node_loc, node)| {
+//         let key = fmt_coord(node_loc);
+//         let value = match node {
+//             Node::Exec(exec_node) => Value::String(exec_node.text.to_string()),
+//         };
+//         (key, value)
+//     }));
+
+//     if let Some(highlighted) = highlighted_node {
+//         table.insert(
+//             HIGHLIGHTED_NODE_KEY.to_string(),
+//             Value::String(fmt_coord(&highlighted)),
+//         );
+//     }
+
+//     table
+// }
+
+fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> String {
+    let mut toml = String::new();
+
+    for (node_loc, node) in nodes {
+        let key = fmt_coord(node_loc);
+
+        let value: &str = match node {
+            Node::Exec(exec_node) => &exec_node.text,
+        };
+
+        toml += &format!("\"{}\" = \"\"\"\n{}\n\"\"\"\n\n", key, value);
+    }
+
+    if let Some(highlighted) = highlighted_node {
+        toml += &format!("{HIGHLIGHTED_NODE_KEY} = \"{}\"", fmt_coord(&highlighted));
+    }
+
+    toml
 }
