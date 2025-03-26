@@ -332,6 +332,17 @@ impl NodeCoord {
         self.top_left_corner() + Vector2::one().scale_by(NODE_OUTSIDE_SIDE_LENGTH / 2.)
     }
 
+    fn io_indicator(&self, dir: Dir) -> Vector2 {
+        self.center()
+            + dir
+                .normalized()
+                .scale_by((NODE_OUTSIDE_SIDE_LENGTH + NODE_OUTSIDE_PADDING) / 2.0)
+            + dir
+                .rotate_right()
+                .normalized()
+                .scale_by(NODE_OUTSIDE_SIDE_LENGTH / 4.0)
+    }
+
     fn neighbor(self, direction: Dir) -> Self {
         let NodeCoord { x, y } = self;
 
@@ -384,8 +395,6 @@ fn main() {
 }
 
 fn init() -> State {
-    let highlighted_node = NodeCoord::at(0, 0);
-
     let camera = Camera2D {
         offset: Default::default(),
         target: Default::default(),
@@ -393,44 +402,7 @@ fn init() -> State {
         zoom: 0.85,
     };
 
-    let left = Node::exec_with_lines([
-        "MOV 10 RIGHT",
-        "MOV 1 RIGHT",
-        "MOV 100 RIGHT",
-        "MOV 0 RIGHT",
-        "JRO 0",
-    ])
-    .unwrap();
-
-    let middle = Node::exec_with_lines([
-        "RST:MOV LEFT ACC",
-        "JNZ SK1",
-        "MOV 1 RIGHT",
-        "JMP RST",
-        "SK1:MOV 4 RIGHT",
-        "MOV ACC RIGHT",
-        "MOV ACC RIGHT",
-    ])
-    .unwrap();
-
-    let right = Node::exec_with_lines([
-        "RST:JRO LEFT",
-        "MOV ACC RIGHT#1",
-        "MOV 0 ACC",
-        "JMP RST",
-        "SUB LEFT#4",
-        "JGZ SK1",
-        "MOV LEFT ACC",
-        "JMP RST",
-        "SK1:ADD LEFT",
-    ])
-    .unwrap();
-
-    let nodes = HashMap::from([
-        (highlighted_node.neighbor(Dir::Left), left),
-        (highlighted_node, middle),
-        (highlighted_node.neighbor(Dir::Right), right),
-    ]);
+    let (nodes, highlighted_node) = parse_toml(include_str!("default.toml")).unwrap();
 
     State {
         camera,
@@ -826,12 +798,15 @@ fn render_io_arrow(
     label: &str,
     font: &Font,
 ) {
-    let indicator_center = node_loc.center() + dir.io_indicator();
+    let indicator_center = node_loc.io_indicator(dir);
 
-    let component_offset = dir.normalized().scale_by(1. / 6. * NODE_OUTSIDE_PADDING);
+    let component_offset = dir
+        .rotate_right()
+        .normalized()
+        .scale_by(1. / 3. * NODE_OUTSIDE_PADDING);
 
-    let arrow_center = indicator_center + component_offset;
-    let text_center = indicator_center - component_offset;
+    let arrow_center = indicator_center - component_offset;
+    let text_center = indicator_center + component_offset;
 
     render_arrow(d, arrow_center, dir, Color::WHITE);
 
@@ -875,36 +850,21 @@ impl Dir {
         }
     }
 
-    fn io_indicator(&self) -> Vector2 {
-        const OFF_CENTER: f32 = NODE_OUTSIDE_SIDE_LENGTH / 6.0;
-        const BETWEEN_NODES: f32 = 0.5 * (NODE_OUTSIDE_SIDE_LENGTH + NODE_OUTSIDE_PADDING);
-
-        match self {
-            Dir::Up => Vector2 {
-                x: OFF_CENTER,
-                y: -BETWEEN_NODES,
-            },
-            Dir::Down => Vector2 {
-                x: -OFF_CENTER,
-                y: BETWEEN_NODES,
-            },
-            Dir::Left => Vector2 {
-                x: -BETWEEN_NODES,
-                y: -OFF_CENTER,
-            },
-            Dir::Right => Vector2 {
-                x: BETWEEN_NODES,
-                y: OFF_CENTER,
-            },
-        }
-    }
-
     fn inverse(&self) -> Self {
         match self {
             Dir::Up => Dir::Down,
             Dir::Down => Dir::Up,
             Dir::Left => Dir::Right,
             Dir::Right => Dir::Left,
+        }
+    }
+
+    fn rotate_right(&self) -> Self {
+        match self {
+            Dir::Left => Dir::Up,
+            Dir::Up => Dir::Right,
+            Dir::Right => Dir::Down,
+            Dir::Down => Dir::Left,
         }
     }
 }
@@ -2094,6 +2054,7 @@ fn expect_dst<'txt>(
     }
 }
 
+#[derive(Debug)]
 enum ImportErr {
     InvalidToml,
     InvalidCoord,
