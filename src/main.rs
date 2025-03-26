@@ -31,18 +31,31 @@ const GHOST_COLOR: Color = Color::GRAY;
 
 type Nodes = HashMap<NodeCoord, Node>;
 
-struct Model {
+struct State {
     camera: Camera2D,
+    model: Model,
+}
+
+struct Model {
     nodes: Nodes,
     highlighted_node: NodeCoord,
     ghosts: Ghosts,
     node_clipboard: Option<Node>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
+enum Modifiers {
+    /// no modifier keys are held
+    None,
+    /// ctrl is held
+    CtrlShift,
+    /// ctrl + shift are held
+    Ctrl,
+}
+
 enum Ghosts {
-    MoveNodeGhosts,
-    MoveViewGhosts,
+    MoveView,
+    MoveNode,
     None,
 }
 
@@ -61,12 +74,6 @@ impl Node {
 
     fn exec_with_text(text: &str) -> Self {
         Self::Exec(ExecNode::with_text(text))
-    }
-
-    fn is_inert(&self) -> bool {
-        match self {
-            Node::Exec(exec_node) => exec_node.is_in_edit_mode(),
-        }
     }
 }
 
@@ -218,25 +225,6 @@ impl ExecNode {
         self.cursor = cursor;
     }
 
-    fn update_edit(&mut self, pressed: &Pressed) {
-        match pressed {
-            Pressed::Arrow(Dir::Up) => self.up(),
-            Pressed::Arrow(Dir::Down) => self.down(),
-            Pressed::Arrow(Dir::Left) => self.left(),
-            Pressed::Arrow(Dir::Right) => self.right(),
-            Pressed::Tab => {} // TODO: TAB, ESC, and DELETE are the only buttons here that can't be used in editing; move them out of this enum in the future
-            Pressed::Esc => {}
-            Pressed::Delete => {}
-            Pressed::Enter => self.enter(),
-            Pressed::Backspace => self.backspace(),
-            Pressed::Home => self.home(),
-            Pressed::End => self.end(),
-            Pressed::Char(char) => self.insert(*char),
-        }
-
-        self.update_error();
-    }
-
     fn update_error(&mut self) {
         self.error = if let Err(parse_err) = parse_node_text(&self.text) {
             Some(parse_err)
@@ -377,7 +365,7 @@ fn main() {
     }
 }
 
-fn init() -> Model {
+fn init() -> State {
     let highlighted_node = NodeCoord::at(0, 0);
 
     let camera = Camera2D {
@@ -427,19 +415,23 @@ fn init() -> Model {
         (highlighted_node.neighbor(Dir::Right), right),
     ]);
 
-    Model {
+    State {
         camera,
-        nodes,
-        highlighted_node,
-        ghosts: Ghosts::None,
-        node_clipboard: None,
+        model: Model {
+            nodes,
+            highlighted_node,
+            ghosts: Ghosts::None,
+            node_clipboard: None,
+        },
     }
 }
 
-fn render(rl: &mut RaylibHandle, thread: &RaylibThread, model: &Model, font: &Font) {
+fn render(rl: &mut RaylibHandle, thread: &RaylibThread, state: &State, font: &Font) {
     let mut d = rl.begin_drawing(&thread);
-    let mut d = d.begin_mode2D(model.camera);
+    let mut d = d.begin_mode2D(state.camera);
     let d = &mut d;
+
+    let model = &state.model;
 
     d.clear_background(Color::BLACK);
 
@@ -461,7 +453,7 @@ fn render(rl: &mut RaylibHandle, thread: &RaylibThread, model: &Model, font: &Fo
 
 fn render_ghosts(d: &mut impl RaylibDraw, model: &Model) {
     match model.ghosts {
-        Ghosts::MoveViewGhosts => {
+        Ghosts::MoveView => {
             for dir in Dir::ALL {
                 let neighbor_loc = model.highlighted_node.neighbor(dir);
                 if !model.nodes.contains_key(&neighbor_loc) {
@@ -472,7 +464,7 @@ fn render_ghosts(d: &mut impl RaylibDraw, model: &Model) {
             }
         }
 
-        Ghosts::MoveNodeGhosts => {
+        Ghosts::MoveNode => {
             for dir in Dir::ALL {
                 let neighbor_loc = model.highlighted_node.neighbor(dir);
                 if !model.nodes.contains_key(&neighbor_loc) {
@@ -1034,8 +1026,7 @@ fn render_dashed_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_
 
 #[derive(Clone, Copy, Debug)]
 struct Input {
-    ctrl_held: bool,
-    shift_held: bool,
+    mods: Modifiers,
     pressed: Option<Pressed>,
     window_dimensions: (i32, i32),
     mouse_wheel_move: f32,
@@ -1060,6 +1051,12 @@ fn get_input(rl: &mut RaylibHandle) -> Input {
 
     let shift_held =
         rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT) || rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+
+    let mods = match (ctrl_held, shift_held) {
+        (true, true) => Modifiers::CtrlShift,
+        (true, false) => Modifiers::Ctrl,
+        (false, _) => Modifiers::None,
+    };
 
     let unbound = None;
     let handled_elsewhere = None;
@@ -1177,366 +1174,277 @@ fn get_input(rl: &mut RaylibHandle) -> Input {
     });
 
     Input {
-        ctrl_held,
-        shift_held,
+        mods,
         pressed,
         window_dimensions: (rl.get_screen_width(), rl.get_screen_height()),
         mouse_wheel_move: rl.get_mouse_wheel_move(),
     }
 }
 
-fn update(model: Model, input: Input) -> Option<Model> {
-    let (nodes, highlighted_node, ghosts, node_clipboard) = match handle_input(&model, &input) {
-        HandledInput::Exit => return None,
-        HandledInput::Changes {
-            highlighted,
-            nodes,
-            ghosts,
-            node_clipboard,
-        } => (
-            nodes.unwrap_or(model.nodes),
-            highlighted,
-            ghosts,
-            node_clipboard,
-        ),
-    };
+fn update(state: State, input: Input) -> Option<State> {
+    let model = handle_input(state.model, &input)?;
 
     let camera = update_camera(
-        model.camera,
-        highlighted_node,
+        state.camera,
+        model.highlighted_node,
         input.window_dimensions,
         input.mouse_wheel_move,
     );
 
-    Some(Model {
-        camera,
-        nodes,
-        highlighted_node,
-        ghosts,
-        node_clipboard,
-    })
+    Some(State { camera, model })
 }
 
-enum HandledInput {
-    Exit,
-    Changes {
-        highlighted: NodeCoord,
-        nodes: Option<Nodes>,
-        ghosts: Ghosts,
-        node_clipboard: Option<Node>,
-    },
-}
+fn handle_input(model: Model, input: &Input) -> Option<Model> {
+    // the old ghosts value should not be reused, this enforces it
+    std::mem::drop(model.ghosts);
 
-fn handle_input(model: &Model, input: &Input) -> HandledInput {
-    match input {
-        Input {
-            pressed: Some(Pressed::Esc),
-            ..
-        } => {
+    let ghosts = match input.mods {
+        Modifiers::Ctrl => Ghosts::MoveView,
+        Modifiers::CtrlShift => Ghosts::MoveNode,
+        Modifiers::None => Ghosts::None,
+    };
+
+    let Some(pressed) = input.pressed else {
+        return Some(Model { ghosts, ..model });
+    };
+
+    match (input.mods, pressed) {
+        (_, Pressed::Esc) => {
             if let Some(updated_nodes) = stop_execution(&model.nodes, model.highlighted_node) {
                 let mut nodes = model.nodes.clone();
 
                 nodes.extend(updated_nodes);
 
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
+                Some(Model {
+                    ghosts,
+                    nodes,
+                    ..model
+                })
             } else {
-                HandledInput::Exit
+                None
             }
         }
 
-        Input {
-            pressed: Some(Pressed::Delete),
-            ..
-        } => {
-            if let Some(node) = model.nodes.get(&model.highlighted_node)
-                && node.is_inert()
-            {
-                let mut nodes = model.nodes.clone();
-
-                nodes.remove(&model.highlighted_node);
-
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
-            } else {
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: model.ghosts,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
-            }
-        }
-
-        Input {
-            ctrl_held: true,
-            pressed: Some(Pressed::Char('C')),
-            ..
-        } => {
-            if let Some(node) = model.nodes.get(&model.highlighted_node)
-                && node.is_inert()
-            {
-                println!("copied!");
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: Ghosts::None,
-                    node_clipboard: Some(node.clone()),
-                }
-            } else {
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: model.ghosts,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
-            }
-        }
-
-        Input {
-            ctrl_held: true,
-            pressed: Some(Pressed::Char('X')),
-            ..
-        } => {
-            if let Some(node) = model.nodes.get(&model.highlighted_node)
-                && node.is_inert()
-            {
-                println!("cut!");
-                let mut nodes = model.nodes.clone();
-
-                let node = nodes.remove(&model.highlighted_node).unwrap();
-
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::None,
-                    node_clipboard: Some(node),
-                }
-            } else {
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: model.ghosts,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
-            }
-        }
-
-        Input {
-            ctrl_held: true,
-            pressed: Some(Pressed::Char('V')),
-            ..
-        } => {
-            if let Some(copied_node) = &model.node_clipboard
-                && model.nodes.get(&model.highlighted_node).is_none()
-            {
-                println!("pasted!");
-                let mut nodes = model.nodes.clone();
-
-                let result = nodes.insert(model.highlighted_node, copied_node.clone());
-
-                debug_assert!(result.is_none());
-
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
-            } else {
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: model.ghosts,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
-            }
-        }
-
-        Input {
-            ctrl_held: false,
-            shift_held: false,
-            pressed: Some(Pressed::Tab),
-            ..
-        } => {
+        (Modifiers::None, Pressed::Tab) => {
             if let Some(updated_nodes) = step_execution(&model.nodes, model.highlighted_node) {
                 let mut nodes = model.nodes.clone();
 
                 nodes.extend(updated_nodes);
 
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
+                Some(Model {
+                    nodes,
+                    ghosts,
+                    ..model
+                })
             } else {
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
+                Some(Model { ghosts, ..model })
             }
         }
 
-        Input {
-            ctrl_held: false,
-            pressed: Some(pressed),
-            ..
-        } => {
-            // potential optimization: a special case of HandledInput could be made
-            // in case only the currently highlighted node has changed, as it has here.
-            // currently, the entire Nodes structure gets cloned when only one nodes text needs to change.
-
-            let highlighted_node = model.nodes.get(&model.highlighted_node);
-
-            if let Some(Node::Exec(exec_node)) = highlighted_node
-                && exec_node.is_in_edit_mode()
-            {
-                let mut nodes = model.nodes.clone();
-
-                let mut exec_node = exec_node.clone();
-
-                exec_node.update_edit(&pressed);
-
-                nodes.insert(model.highlighted_node, Node::Exec(exec_node));
-
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
+        (Modifiers::None, Pressed::Arrow(dir)) => {
+            let mut nodes = model.nodes;
+            match nodes.get_mut(&model.highlighted_node) {
+                Some(Node::Exec(exec_node)) => {
+                    match dir {
+                        Dir::Up => exec_node.up(),
+                        Dir::Down => exec_node.down(),
+                        Dir::Left => exec_node.left(),
+                        Dir::Right => exec_node.right(),
+                    };
+                    Some(Model {
+                        nodes,
+                        ghosts,
+                        ..model
+                    })
                 }
-            } else if highlighted_node.is_none() && pressed == &Pressed::Char('E') {
-                let mut nodes = model.nodes.clone();
 
-                nodes.insert(model.highlighted_node, Node::empty_exec());
-
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
-            } else {
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: Ghosts::None,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
+                None => Some(Model {
+                    nodes,
+                    ghosts,
+                    ..model
+                }),
             }
         }
 
-        Input {
-            ctrl_held: true,
-            shift_held: false,
-            pressed: Some(Pressed::Arrow(direction)),
-            ..
-        } => HandledInput::Changes {
-            highlighted: model.highlighted_node.neighbor(*direction),
-            nodes: None,
-            ghosts: Ghosts::MoveViewGhosts,
-            node_clipboard: model.node_clipboard.clone(),
-        },
+        (Modifiers::Ctrl, Pressed::Arrow(dir)) => Some(Model {
+            highlighted_node: model.highlighted_node.neighbor(dir),
+            ghosts,
+            ..model
+        }),
 
-        Input {
-            ctrl_held: true,
-            shift_held: true,
-            pressed: Some(Pressed::Arrow(direction)),
-            ..
-        } => {
-            let target = model.highlighted_node.neighbor(*direction);
+        (Modifiers::CtrlShift, Pressed::Arrow(dir)) => {
+            let mut nodes = model.nodes;
+            let src = model.highlighted_node;
+            let dst = model.highlighted_node.neighbor(dir);
+            if nodes.contains_key(&src) && !nodes.contains_key(&dst) {
+                let node = nodes.remove(&src).unwrap();
 
-            let target_is_empty = !model.nodes.contains_key(&target);
+                nodes.try_insert(dst, node).unwrap();
 
-            let highlighted_is_moveable = model
-                .nodes
-                .get(&model.highlighted_node)
-                .is_some_and(Node::is_inert);
-
-            if target_is_empty && highlighted_is_moveable {
-                let mut nodes = model.nodes.clone();
-
-                let node_to_move = nodes.remove(&model.highlighted_node).unwrap();
-
-                nodes.insert(target, node_to_move);
-
-                HandledInput::Changes {
-                    highlighted: target,
-                    nodes: Some(nodes),
-                    ghosts: Ghosts::MoveNodeGhosts,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
+                Some(Model {
+                    nodes,
+                    ghosts,
+                    highlighted_node: dst,
+                    ..model
+                })
             } else {
-                HandledInput::Changes {
-                    highlighted: model.highlighted_node,
-                    nodes: None,
-                    ghosts: Ghosts::MoveNodeGhosts,
-                    node_clipboard: model.node_clipboard.clone(),
-                }
+                Some(Model {
+                    nodes,
+                    ghosts,
+                    ..model
+                })
             }
         }
 
-        Input {
-            ctrl_held: true,
-            shift_held: false,
-            pressed: None,
-            ..
-        } => HandledInput::Changes {
-            highlighted: model.highlighted_node,
-            nodes: None,
-            ghosts: Ghosts::MoveViewGhosts,
-            node_clipboard: model.node_clipboard.clone(),
-        },
+        (Modifiers::None, Pressed::Delete) => {
+            let mut nodes = model.nodes;
 
-        Input {
-            ctrl_held: true,
-            shift_held: true,
-            pressed: None,
-            ..
-        } => {
-            let highlighted_is_moveable = model
-                .nodes
-                .get(&model.highlighted_node)
-                .is_some_and(Node::is_inert);
+            nodes.remove(&model.highlighted_node);
 
-            let ghosts = if highlighted_is_moveable {
-                Ghosts::MoveNodeGhosts
-            } else {
-                Ghosts::None
-            };
-
-            HandledInput::Changes {
-                highlighted: model.highlighted_node,
-                nodes: None,
+            Some(Model {
+                nodes,
                 ghosts,
-                node_clipboard: model.node_clipboard.clone(),
+                ..model
+            })
+        }
+
+        (Modifiers::Ctrl, Pressed::Char('C')) => {
+            if let Some(node) = model.nodes.get(&model.highlighted_node) {
+                Some(Model {
+                    ghosts,
+                    node_clipboard: Some(node.clone()),
+                    ..model
+                })
+            } else {
+                Some(Model { ghosts, ..model })
             }
         }
 
-        Input {
-            ctrl_held: false, ..
+        (Modifiers::Ctrl, Pressed::Char('X')) => {
+            let mut nodes = model.nodes;
+            if let Some(node) = nodes.remove(&model.highlighted_node) {
+                Some(Model {
+                    nodes,
+                    ghosts,
+                    node_clipboard: Some(node.clone()),
+                    ..model
+                })
+            } else {
+                Some(Model {
+                    nodes,
+                    ghosts,
+                    ..model
+                })
+            }
         }
-        | Input {
-            ctrl_held: true,
-            pressed: Some(_),
-            ..
-        } => HandledInput::Changes {
-            highlighted: model.highlighted_node,
-            nodes: None,
-            ghosts: Ghosts::None,
-            node_clipboard: model.node_clipboard.clone(),
-        },
+
+        (Modifiers::Ctrl, Pressed::Char('V')) => {
+            let mut nodes = model.nodes;
+
+            if let Some(ref copied_node) = model.node_clipboard {
+                let _ = nodes.try_insert(model.highlighted_node, copied_node.clone());
+            }
+
+            Some(Model {
+                nodes,
+                ghosts,
+                ..model
+            })
+        }
+
+        (Modifiers::None, Pressed::Char(char)) => {
+            let mut nodes = model.nodes;
+
+            match nodes.get_mut(&model.highlighted_node) {
+                Some(Node::Exec(exec_node)) => {
+                    exec_node.insert(char);
+                    exec_node.update_error();
+                }
+
+                None => {
+                    if char == 'E' {
+                        nodes
+                            .try_insert(model.highlighted_node, Node::empty_exec())
+                            .unwrap();
+                    }
+                }
+            }
+
+            Some(Model {
+                nodes,
+                ghosts,
+                ..model
+            })
+        }
+
+        (Modifiers::None, Pressed::Home) => {
+            let mut nodes = model.nodes;
+
+            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+                exec_node.home();
+            }
+
+            Some(Model {
+                nodes,
+                ghosts,
+                ..model
+            })
+        }
+
+        (Modifiers::None, Pressed::End) => {
+            let mut nodes = model.nodes;
+
+            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+                exec_node.end();
+            }
+
+            Some(Model {
+                nodes,
+                ghosts,
+                ..model
+            })
+        }
+
+        (Modifiers::None, Pressed::Backspace) => {
+            let mut nodes = model.nodes;
+
+            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+                exec_node.backspace();
+                exec_node.update_error();
+            }
+
+            Some(Model {
+                nodes,
+                ghosts,
+                ..model
+            })
+        }
+
+        (Modifiers::None, Pressed::Enter) => {
+            let mut nodes = model.nodes;
+
+            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+                exec_node.enter();
+                exec_node.update_error();
+            }
+
+            Some(Model {
+                nodes,
+                ghosts,
+                ..model
+            })
+        }
+
+        (
+            Modifiers::Ctrl | Modifiers::CtrlShift,
+            Pressed::Backspace
+            | Pressed::Delete
+            | Pressed::Enter
+            | Pressed::Home
+            | Pressed::End
+            | Pressed::Tab
+            | Pressed::Char(_),
+        ) => Some(Model { ghosts, ..model }),
     }
 }
 
