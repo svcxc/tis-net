@@ -3,6 +3,4 @@
 - allow user to let nodes execute without manually stepping
 - allow optional comma between instruction arguments
 - add ANY and LAST ports
-- move TAB, ESC, and DELETE out of the Pressed enum; see TODO comment in .update_edit()
-- clean up HandledInput type; only Nodes really warrants lazily updating
 - add hints for which keys spawn which nodes when the highlighted node coordinate doesn't contain a node
