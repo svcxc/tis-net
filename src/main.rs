@@ -2172,25 +2172,6 @@ fn fmt_coord(node_loc: &NodeCoord) -> String {
     format!("{}, {}", node_loc.x, node_loc.y)
 }
 
-// fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> Table {
-//     let mut table = Table::from_iter(nodes.iter().map(|(node_loc, node)| {
-//         let key = fmt_coord(node_loc);
-//         let value = match node {
-//             Node::Exec(exec_node) => Value::String(exec_node.text.to_string()),
-//         };
-//         (key, value)
-//     }));
-
-//     if let Some(highlighted) = highlighted_node {
-//         table.insert(
-//             HIGHLIGHTED_NODE_KEY.to_string(),
-//             Value::String(fmt_coord(&highlighted)),
-//         );
-//     }
-
-//     table
-// }
-
 fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> String {
     let mut toml = String::new();
 
