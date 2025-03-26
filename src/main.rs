@@ -26,6 +26,8 @@ const LINE_THICKNESS: f32 = 2.0;
 const GIZMO_OUTSIDE_SIDE_LENGTH: f32 = NODE_OUTSIDE_SIDE_LENGTH / 4.0;
 const NODE_TEXT_BOX_WIDTH: f32 =
     NODE_OUTSIDE_SIDE_LENGTH - GIZMO_OUTSIDE_SIDE_LENGTH - NODE_INSIDE_PADDING * 2.0;
+const KEY_REPEAT_DELAY_S: f32 = 0.5;
+const KEY_REPEAT_INTERVAL_S: f32 = 1.0 / 30.0;
 
 const GHOST_COLOR: Color = Color::GRAY;
 
@@ -375,22 +377,23 @@ fn main() {
     font.texture()
         .set_texture_filter(&thread, TextureFilter::TEXTURE_FILTER_BILINEAR);
 
-    let mut model = init();
+    let mut state = init();
+    let mut repeat_key = RepeatKey::None;
 
     loop {
         if rl.window_should_close() {
             break;
         }
 
-        let input = get_input(&mut rl);
+        let input = get_input(&mut rl, &mut repeat_key);
 
-        let Some(new_model) = update(model, input) else {
+        let Some(new_state) = update(state, input) else {
             break;
         };
 
-        render(&mut rl, &thread, &new_model, &font);
+        render(&mut rl, &thread, &new_state, &font);
 
-        model = new_model;
+        state = new_state;
     }
 }
 
@@ -1008,13 +1011,13 @@ fn render_dashed_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_
 #[derive(Clone, Copy, Debug)]
 struct Input {
     mods: Modifiers,
-    pressed: Option<Pressed>,
+    pressed: Option<Key>,
     window_dimensions: (i32, i32),
     mouse_wheel_move: f32,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-enum Pressed {
+enum Key {
     Esc,
     Tab,
     Backspace,
@@ -1026,7 +1029,130 @@ enum Pressed {
     Char(char),
 }
 
-fn get_input(rl: &mut RaylibHandle) -> Input {
+impl Key {
+    fn from(raylib_key: KeyboardKey) -> Option<Self> {
+        let unbound = None;
+        let handled_elsewhere = None;
+        match raylib_key {
+            KeyboardKey::KEY_NULL => None,
+            KeyboardKey::KEY_APOSTROPHE => Some(Key::Char('\'')),
+            KeyboardKey::KEY_COMMA => Some(Key::Char(',')),
+            KeyboardKey::KEY_MINUS => Some(Key::Char('-')),
+            KeyboardKey::KEY_PERIOD => Some(Key::Char('.')),
+            KeyboardKey::KEY_SLASH => Some(Key::Char('/')),
+            KeyboardKey::KEY_ZERO => Some(Key::Char('0')),
+            KeyboardKey::KEY_ONE => Some(Key::Char('1')),
+            KeyboardKey::KEY_TWO => Some(Key::Char('2')),
+            KeyboardKey::KEY_THREE => Some(Key::Char('3')),
+            KeyboardKey::KEY_FOUR => Some(Key::Char('4')),
+            KeyboardKey::KEY_FIVE => Some(Key::Char('5')),
+            KeyboardKey::KEY_SIX => Some(Key::Char('6')),
+            KeyboardKey::KEY_SEVEN => Some(Key::Char('7')),
+            KeyboardKey::KEY_EIGHT => Some(Key::Char('8')),
+            KeyboardKey::KEY_NINE => Some(Key::Char('9')),
+            KeyboardKey::KEY_SEMICOLON => Some(Key::Char(';')),
+            KeyboardKey::KEY_EQUAL => Some(Key::Char('=')),
+            KeyboardKey::KEY_A => Some(Key::Char('A')),
+            KeyboardKey::KEY_B => Some(Key::Char('B')),
+            KeyboardKey::KEY_C => Some(Key::Char('C')),
+            KeyboardKey::KEY_D => Some(Key::Char('D')),
+            KeyboardKey::KEY_E => Some(Key::Char('E')),
+            KeyboardKey::KEY_F => Some(Key::Char('F')),
+            KeyboardKey::KEY_G => Some(Key::Char('G')),
+            KeyboardKey::KEY_H => Some(Key::Char('H')),
+            KeyboardKey::KEY_I => Some(Key::Char('I')),
+            KeyboardKey::KEY_J => Some(Key::Char('J')),
+            KeyboardKey::KEY_K => Some(Key::Char('K')),
+            KeyboardKey::KEY_L => Some(Key::Char('L')),
+            KeyboardKey::KEY_M => Some(Key::Char('M')),
+            KeyboardKey::KEY_N => Some(Key::Char('N')),
+            KeyboardKey::KEY_O => Some(Key::Char('O')),
+            KeyboardKey::KEY_P => Some(Key::Char('P')),
+            KeyboardKey::KEY_Q => Some(Key::Char('Q')),
+            KeyboardKey::KEY_R => Some(Key::Char('R')),
+            KeyboardKey::KEY_S => Some(Key::Char('S')),
+            KeyboardKey::KEY_T => Some(Key::Char('T')),
+            KeyboardKey::KEY_U => Some(Key::Char('U')),
+            KeyboardKey::KEY_V => Some(Key::Char('V')),
+            KeyboardKey::KEY_W => Some(Key::Char('W')),
+            KeyboardKey::KEY_X => Some(Key::Char('X')),
+            KeyboardKey::KEY_Y => Some(Key::Char('Y')),
+            KeyboardKey::KEY_Z => Some(Key::Char('Z')),
+            KeyboardKey::KEY_LEFT_BRACKET => Some(Key::Char('(')),
+            KeyboardKey::KEY_BACKSLASH => Some(Key::Char('\\')),
+            KeyboardKey::KEY_RIGHT_BRACKET => Some(Key::Char('0')),
+            KeyboardKey::KEY_GRAVE => Some(Key::Char('`')),
+            KeyboardKey::KEY_SPACE => Some(Key::Char(' ')),
+            KeyboardKey::KEY_ESCAPE => Some(Key::Esc),
+            KeyboardKey::KEY_ENTER => Some(Key::Enter),
+            KeyboardKey::KEY_TAB => Some(Key::Tab),
+            KeyboardKey::KEY_BACKSPACE => Some(Key::Backspace),
+            KeyboardKey::KEY_INSERT => unbound,
+            KeyboardKey::KEY_DELETE => Some(Key::Delete),
+            KeyboardKey::KEY_RIGHT => Some(Key::Arrow(Dir::Right)),
+            KeyboardKey::KEY_LEFT => Some(Key::Arrow(Dir::Left)),
+            KeyboardKey::KEY_DOWN => Some(Key::Arrow(Dir::Down)),
+            KeyboardKey::KEY_UP => Some(Key::Arrow(Dir::Up)),
+            KeyboardKey::KEY_PAGE_UP => unbound,
+            KeyboardKey::KEY_PAGE_DOWN => unbound,
+            KeyboardKey::KEY_HOME => Some(Key::Home),
+            KeyboardKey::KEY_END => Some(Key::End),
+            KeyboardKey::KEY_CAPS_LOCK => unbound,
+            KeyboardKey::KEY_SCROLL_LOCK => unbound,
+            KeyboardKey::KEY_NUM_LOCK => unbound,
+            KeyboardKey::KEY_PRINT_SCREEN => unbound,
+            KeyboardKey::KEY_PAUSE => unbound,
+            KeyboardKey::KEY_F1 => unbound,
+            KeyboardKey::KEY_F2 => unbound,
+            KeyboardKey::KEY_F3 => unbound,
+            KeyboardKey::KEY_F4 => unbound,
+            KeyboardKey::KEY_F5 => unbound,
+            KeyboardKey::KEY_F6 => unbound,
+            KeyboardKey::KEY_F7 => unbound,
+            KeyboardKey::KEY_F8 => unbound,
+            KeyboardKey::KEY_F9 => unbound,
+            KeyboardKey::KEY_F10 => unbound,
+            KeyboardKey::KEY_F11 => unbound,
+            KeyboardKey::KEY_F12 => unbound,
+            KeyboardKey::KEY_LEFT_SHIFT => handled_elsewhere,
+            KeyboardKey::KEY_LEFT_CONTROL => handled_elsewhere,
+            KeyboardKey::KEY_LEFT_ALT => unbound,
+            KeyboardKey::KEY_LEFT_SUPER => unbound,
+            KeyboardKey::KEY_RIGHT_SHIFT => handled_elsewhere,
+            KeyboardKey::KEY_RIGHT_CONTROL => handled_elsewhere,
+            KeyboardKey::KEY_RIGHT_ALT => unbound,
+            KeyboardKey::KEY_RIGHT_SUPER => unbound,
+            KeyboardKey::KEY_KB_MENU => unbound,
+            KeyboardKey::KEY_KP_0 => unbound,
+            KeyboardKey::KEY_KP_1 => Some(Key::End),
+            KeyboardKey::KEY_KP_2 => unbound,
+            KeyboardKey::KEY_KP_3 => unbound,
+            KeyboardKey::KEY_KP_4 => unbound,
+            KeyboardKey::KEY_KP_5 => unbound,
+            KeyboardKey::KEY_KP_6 => unbound,
+            KeyboardKey::KEY_KP_7 => Some(Key::Home),
+            KeyboardKey::KEY_KP_8 => unbound,
+            KeyboardKey::KEY_KP_9 => unbound,
+            KeyboardKey::KEY_KP_DECIMAL => unbound,
+            KeyboardKey::KEY_KP_DIVIDE => unbound,
+            KeyboardKey::KEY_KP_MULTIPLY => unbound,
+            KeyboardKey::KEY_KP_SUBTRACT => unbound,
+            KeyboardKey::KEY_KP_ADD => unbound,
+            KeyboardKey::KEY_KP_ENTER => unbound,
+            KeyboardKey::KEY_KP_EQUAL => unbound,
+            KeyboardKey::KEY_BACK => Some(Key::Backspace),
+            KeyboardKey::KEY_VOLUME_UP => unbound,
+            KeyboardKey::KEY_VOLUME_DOWN => unbound,
+        }
+    }
+}
+
+enum RepeatKey {
+    None,
+    Held { key: KeyboardKey, repeat_delay: f32 },
+}
+
+fn get_input(rl: &mut RaylibHandle, repeat: &mut RepeatKey) -> Input {
     let ctrl_held = rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
         || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL);
 
@@ -1039,120 +1165,28 @@ fn get_input(rl: &mut RaylibHandle) -> Input {
         (false, _) => Modifiers::None,
     };
 
-    let unbound = None;
-    let handled_elsewhere = None;
+    let raylib_key_pressed = rl.get_key_pressed();
 
-    let pressed = rl.get_key_pressed().and_then(|key| match key {
-        KeyboardKey::KEY_NULL => None,
-        KeyboardKey::KEY_APOSTROPHE => Some(Pressed::Char('\'')),
-        KeyboardKey::KEY_COMMA => Some(Pressed::Char(',')),
-        KeyboardKey::KEY_MINUS => Some(Pressed::Char('-')),
-        KeyboardKey::KEY_PERIOD => Some(Pressed::Char('.')),
-        KeyboardKey::KEY_SLASH => Some(Pressed::Char('/')),
-        KeyboardKey::KEY_ZERO => Some(Pressed::Char('0')),
-        KeyboardKey::KEY_ONE => Some(Pressed::Char('1')),
-        KeyboardKey::KEY_TWO => Some(Pressed::Char('2')),
-        KeyboardKey::KEY_THREE => Some(Pressed::Char('3')),
-        KeyboardKey::KEY_FOUR => Some(Pressed::Char('4')),
-        KeyboardKey::KEY_FIVE => Some(Pressed::Char('5')),
-        KeyboardKey::KEY_SIX => Some(Pressed::Char('6')),
-        KeyboardKey::KEY_SEVEN => Some(Pressed::Char('7')),
-        KeyboardKey::KEY_EIGHT => Some(Pressed::Char('8')),
-        KeyboardKey::KEY_NINE => Some(Pressed::Char('9')),
-        KeyboardKey::KEY_SEMICOLON => Some(Pressed::Char(';')),
-        KeyboardKey::KEY_EQUAL => Some(Pressed::Char('=')),
-        KeyboardKey::KEY_A => Some(Pressed::Char('A')),
-        KeyboardKey::KEY_B => Some(Pressed::Char('B')),
-        KeyboardKey::KEY_C => Some(Pressed::Char('C')),
-        KeyboardKey::KEY_D => Some(Pressed::Char('D')),
-        KeyboardKey::KEY_E => Some(Pressed::Char('E')),
-        KeyboardKey::KEY_F => Some(Pressed::Char('F')),
-        KeyboardKey::KEY_G => Some(Pressed::Char('G')),
-        KeyboardKey::KEY_H => Some(Pressed::Char('H')),
-        KeyboardKey::KEY_I => Some(Pressed::Char('I')),
-        KeyboardKey::KEY_J => Some(Pressed::Char('J')),
-        KeyboardKey::KEY_K => Some(Pressed::Char('K')),
-        KeyboardKey::KEY_L => Some(Pressed::Char('L')),
-        KeyboardKey::KEY_M => Some(Pressed::Char('M')),
-        KeyboardKey::KEY_N => Some(Pressed::Char('N')),
-        KeyboardKey::KEY_O => Some(Pressed::Char('O')),
-        KeyboardKey::KEY_P => Some(Pressed::Char('P')),
-        KeyboardKey::KEY_Q => Some(Pressed::Char('Q')),
-        KeyboardKey::KEY_R => Some(Pressed::Char('R')),
-        KeyboardKey::KEY_S => Some(Pressed::Char('S')),
-        KeyboardKey::KEY_T => Some(Pressed::Char('T')),
-        KeyboardKey::KEY_U => Some(Pressed::Char('U')),
-        KeyboardKey::KEY_V => Some(Pressed::Char('V')),
-        KeyboardKey::KEY_W => Some(Pressed::Char('W')),
-        KeyboardKey::KEY_X => Some(Pressed::Char('X')),
-        KeyboardKey::KEY_Y => Some(Pressed::Char('Y')),
-        KeyboardKey::KEY_Z => Some(Pressed::Char('Z')),
-        KeyboardKey::KEY_LEFT_BRACKET => Some(Pressed::Char('(')),
-        KeyboardKey::KEY_BACKSLASH => Some(Pressed::Char('\\')),
-        KeyboardKey::KEY_RIGHT_BRACKET => Some(Pressed::Char('0')),
-        KeyboardKey::KEY_GRAVE => Some(Pressed::Char('`')),
-        KeyboardKey::KEY_SPACE => Some(Pressed::Char(' ')),
-        KeyboardKey::KEY_ESCAPE => Some(Pressed::Esc),
-        KeyboardKey::KEY_ENTER => Some(Pressed::Enter),
-        KeyboardKey::KEY_TAB => Some(Pressed::Tab),
-        KeyboardKey::KEY_BACKSPACE => Some(Pressed::Backspace),
-        KeyboardKey::KEY_INSERT => unbound,
-        KeyboardKey::KEY_DELETE => Some(Pressed::Delete),
-        KeyboardKey::KEY_RIGHT => Some(Pressed::Arrow(Dir::Right)),
-        KeyboardKey::KEY_LEFT => Some(Pressed::Arrow(Dir::Left)),
-        KeyboardKey::KEY_DOWN => Some(Pressed::Arrow(Dir::Down)),
-        KeyboardKey::KEY_UP => Some(Pressed::Arrow(Dir::Up)),
-        KeyboardKey::KEY_PAGE_UP => unbound,
-        KeyboardKey::KEY_PAGE_DOWN => unbound,
-        KeyboardKey::KEY_HOME => Some(Pressed::Home),
-        KeyboardKey::KEY_END => Some(Pressed::End),
-        KeyboardKey::KEY_CAPS_LOCK => unbound,
-        KeyboardKey::KEY_SCROLL_LOCK => unbound,
-        KeyboardKey::KEY_NUM_LOCK => unbound,
-        KeyboardKey::KEY_PRINT_SCREEN => unbound,
-        KeyboardKey::KEY_PAUSE => unbound,
-        KeyboardKey::KEY_F1 => unbound,
-        KeyboardKey::KEY_F2 => unbound,
-        KeyboardKey::KEY_F3 => unbound,
-        KeyboardKey::KEY_F4 => unbound,
-        KeyboardKey::KEY_F5 => unbound,
-        KeyboardKey::KEY_F6 => unbound,
-        KeyboardKey::KEY_F7 => unbound,
-        KeyboardKey::KEY_F8 => unbound,
-        KeyboardKey::KEY_F9 => unbound,
-        KeyboardKey::KEY_F10 => unbound,
-        KeyboardKey::KEY_F11 => unbound,
-        KeyboardKey::KEY_F12 => unbound,
-        KeyboardKey::KEY_LEFT_SHIFT => handled_elsewhere,
-        KeyboardKey::KEY_LEFT_CONTROL => handled_elsewhere,
-        KeyboardKey::KEY_LEFT_ALT => unbound,
-        KeyboardKey::KEY_LEFT_SUPER => unbound,
-        KeyboardKey::KEY_RIGHT_SHIFT => handled_elsewhere,
-        KeyboardKey::KEY_RIGHT_CONTROL => handled_elsewhere,
-        KeyboardKey::KEY_RIGHT_ALT => unbound,
-        KeyboardKey::KEY_RIGHT_SUPER => unbound,
-        KeyboardKey::KEY_KB_MENU => unbound,
-        KeyboardKey::KEY_KP_0 => unbound,
-        KeyboardKey::KEY_KP_1 => Some(Pressed::End),
-        KeyboardKey::KEY_KP_2 => unbound,
-        KeyboardKey::KEY_KP_3 => unbound,
-        KeyboardKey::KEY_KP_4 => unbound,
-        KeyboardKey::KEY_KP_5 => unbound,
-        KeyboardKey::KEY_KP_6 => unbound,
-        KeyboardKey::KEY_KP_7 => Some(Pressed::Home),
-        KeyboardKey::KEY_KP_8 => unbound,
-        KeyboardKey::KEY_KP_9 => unbound,
-        KeyboardKey::KEY_KP_DECIMAL => unbound,
-        KeyboardKey::KEY_KP_DIVIDE => unbound,
-        KeyboardKey::KEY_KP_MULTIPLY => unbound,
-        KeyboardKey::KEY_KP_SUBTRACT => unbound,
-        KeyboardKey::KEY_KP_ADD => unbound,
-        KeyboardKey::KEY_KP_ENTER => unbound,
-        KeyboardKey::KEY_KP_EQUAL => unbound,
-        KeyboardKey::KEY_BACK => Some(Pressed::Backspace),
-        KeyboardKey::KEY_VOLUME_UP => unbound,
-        KeyboardKey::KEY_VOLUME_DOWN => unbound,
-    });
+    let pressed = if let Some(key) = raylib_key_pressed {
+        *repeat = RepeatKey::Held {
+            key,
+            repeat_delay: KEY_REPEAT_DELAY_S,
+        };
+        raylib_key_pressed.and_then(Key::from)
+    } else if let RepeatKey::Held { key, repeat_delay } = repeat
+        && rl.is_key_down(*key)
+    {
+        *repeat_delay -= rl.get_frame_time();
+        if *repeat_delay <= 0.0 {
+            *repeat_delay = KEY_REPEAT_INTERVAL_S;
+            Key::from(*key)
+        } else {
+            None
+        }
+    } else {
+        *repeat = RepeatKey::None;
+        raylib_key_pressed.and_then(Key::from)
+    };
 
     Input {
         mods,
@@ -1190,7 +1224,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
     };
 
     match (input.mods, pressed) {
-        (_, Pressed::Esc) => {
+        (_, Key::Esc) => {
             if let Some(updated_nodes) = stop_execution(&model.nodes, model.highlighted_node) {
                 let mut nodes = model.nodes.clone();
 
@@ -1206,7 +1240,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::None, Pressed::Tab) => {
+        (Modifiers::None, Key::Tab) => {
             if let Some(updated_nodes) = step_execution(&model.nodes, model.highlighted_node) {
                 let mut nodes = model.nodes.clone();
 
@@ -1222,7 +1256,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::None, Pressed::Arrow(dir)) => {
+        (Modifiers::None, Key::Arrow(dir)) => {
             let mut nodes = model.nodes;
             match nodes.get_mut(&model.highlighted_node) {
                 Some(Node::Exec(exec_node)) => {
@@ -1247,13 +1281,13 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::Ctrl, Pressed::Arrow(dir)) => Some(Model {
+        (Modifiers::Ctrl, Key::Arrow(dir)) => Some(Model {
             highlighted_node: model.highlighted_node.neighbor(dir),
             ghosts,
             ..model
         }),
 
-        (Modifiers::CtrlShift, Pressed::Arrow(dir)) => {
+        (Modifiers::CtrlShift, Key::Arrow(dir)) => {
             let mut nodes = model.nodes;
             let src = model.highlighted_node;
             let dst = model.highlighted_node.neighbor(dir);
@@ -1277,7 +1311,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::None, Pressed::Delete) => {
+        (Modifiers::None, Key::Delete) => {
             let mut nodes = model.nodes;
 
             nodes.remove(&model.highlighted_node);
@@ -1289,7 +1323,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::Ctrl, Pressed::Char('C')) => {
+        (Modifiers::Ctrl, Key::Char('C')) => {
             if let Some(node) = model.nodes.get(&model.highlighted_node) {
                 Some(Model {
                     ghosts,
@@ -1301,7 +1335,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::Ctrl, Pressed::Char('X')) => {
+        (Modifiers::Ctrl, Key::Char('X')) => {
             let mut nodes = model.nodes;
             if let Some(node) = nodes.remove(&model.highlighted_node) {
                 Some(Model {
@@ -1319,7 +1353,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::Ctrl, Pressed::Char('V')) => {
+        (Modifiers::Ctrl, Key::Char('V')) => {
             let mut nodes = model.nodes;
 
             if let Some(ref copied_node) = model.node_clipboard {
@@ -1333,7 +1367,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::Ctrl, Pressed::Char('O')) => {
+        (Modifiers::Ctrl, Key::Char('O')) => {
             if let Some(path) = rfd::FileDialog::new()
                 .set_title("Load TIS workspace from file")
                 .add_filter("TIS workspace", &["toml"])
@@ -1397,7 +1431,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::Ctrl, Pressed::Char('S')) => {
+        (Modifiers::Ctrl, Key::Char('S')) => {
             if let Some(path) = rfd::FileDialog::new()
                 .set_title("Save TIS workspace to file")
                 .add_filter("TIS workspace", &["toml"])
@@ -1419,7 +1453,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::None, Pressed::Char(char)) => {
+        (Modifiers::None, Key::Char(char)) => {
             let mut nodes = model.nodes;
 
             match nodes.get_mut(&model.highlighted_node) {
@@ -1444,7 +1478,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::None, Pressed::Home) => {
+        (Modifiers::None, Key::Home) => {
             let mut nodes = model.nodes;
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
@@ -1458,7 +1492,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::None, Pressed::End) => {
+        (Modifiers::None, Key::End) => {
             let mut nodes = model.nodes;
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
@@ -1472,7 +1506,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::None, Pressed::Backspace) => {
+        (Modifiers::None, Key::Backspace) => {
             let mut nodes = model.nodes;
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
@@ -1487,7 +1521,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::None, Pressed::Enter) => {
+        (Modifiers::None, Key::Enter) => {
             let mut nodes = model.nodes;
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
@@ -1504,13 +1538,13 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
         (
             Modifiers::Ctrl | Modifiers::CtrlShift,
-            Pressed::Backspace
-            | Pressed::Delete
-            | Pressed::Enter
-            | Pressed::Home
-            | Pressed::End
-            | Pressed::Tab
-            | Pressed::Char(_),
+            Key::Backspace
+            | Key::Delete
+            | Key::Enter
+            | Key::Home
+            | Key::End
+            | Key::Tab
+            | Key::Char(_),
         ) => Some(Model { ghosts, ..model }),
     }
 }
