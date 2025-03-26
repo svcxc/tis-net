@@ -55,6 +55,7 @@ enum Modifiers {
     Ctrl,
 }
 
+#[derive(PartialEq, Eq)]
 enum Ghosts {
     MoveView,
     MoveNode,
@@ -439,7 +440,8 @@ fn render(rl: &mut RaylibHandle, thread: &RaylibThread, state: &State, font: &Fo
         }
     } else {
         render_dashed_node_border(d, model.highlighted_node, Color::GRAY);
-        // render_plus(d, model.highlighted_node.center(), Color::GRAY);
+
+        render_plus(d, model.highlighted_node.center(), Color::GRAY);
     }
 }
 
@@ -870,6 +872,21 @@ impl Dir {
             Dir::Down => Dir::Left,
         }
     }
+}
+
+fn render_plus(d: &mut impl RaylibDraw, center: Vector2, color: Color) {
+    d.draw_line_ex(
+        center + Vector2::new(-NODE_LINE_HEIGHT, 0.0),
+        center + Vector2::new(NODE_LINE_HEIGHT, 0.0),
+        LINE_THICKNESS,
+        color,
+    );
+    d.draw_line_ex(
+        center + Vector2::new(0.0, -NODE_LINE_HEIGHT),
+        center + Vector2::new(0.0, NODE_LINE_HEIGHT),
+        LINE_THICKNESS,
+        color,
+    );
 }
 
 fn render_arrow(d: &mut impl RaylibDraw, center: Vector2, direction: Dir, color: Color) {
