@@ -536,32 +536,36 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
 }
 
 fn render_node_text(d: &mut impl RaylibDraw, node: &ExecNode, node_loc: &NodeCoord, font: &Font) {
-    let highlight = node.exec.as_ref().and_then(|exec| {
-        if exec.code.is_empty() {
-            None
-        } else {
-            Some((
-                exec.code[exec.ip as usize].src_line,
-                exec.io == NodeIO::None,
-            ))
-        }
-    });
-
-    for (line_no, line) in node.text.split('\n').enumerate() {
-        let line_loc = node_loc.line_pos(line_no);
-
-        let line_no = line_no as u8;
-        let highlight_mode = match highlight {
-            Some((highlight_line, true)) if highlight_line == line_no => Highlight::Executing,
-            Some((highlight_line, false)) if highlight_line == line_no => Highlight::IO,
-            _ => Highlight::None,
+    if let Some(ref exec) = node.exec
+        && let Some(instr) = exec.code.get(exec.ip as usize)
+    {
+        let highlighted_line = instr.src_line;
+        let highlight_type = match exec.io {
+            NodeIO::None => Highlight::Executing,
+            NodeIO::Inbound(_) | NodeIO::Outbound(_, _) => Highlight::IO,
         };
 
-        render_node_text_line(d, line_loc, line, highlight_mode, font);
+        for (line_no, line) in node.text.split('\n').enumerate() {
+            let line_loc = node_loc.line_pos(line_no);
+
+            let highlight = if line_no == highlighted_line as usize {
+                highlight_type
+            } else {
+                Highlight::None
+            };
+
+            render_node_text_line(d, line_loc, line, highlight, font);
+        }
+    } else {
+        for (line_no, line) in node.text.split('\n').enumerate() {
+            let line_loc = node_loc.line_pos(line_no);
+
+            render_node_text_line(d, line_loc, line, Highlight::None, font);
+        }
     }
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum Highlight {
     None,
     Executing,
