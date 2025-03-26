@@ -27,5 +27,3 @@ MOV LEFT ACC
 JMP RST
 SK1:ADD LEFT
 """
-
-highlighted = "0, -1"
