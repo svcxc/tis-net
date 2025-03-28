@@ -145,15 +145,16 @@ impl ExecNode {
 
     fn backspace(&mut self) {
         if self.text_selected() {
+            self.insert("");
+        } else {
             let Some(index) = self.cursor.checked_sub(1) else {
                 return;
             };
 
             self.text.remove(index);
             self.cursor = index;
+            self.select_cursor = index;
             self.update_error();
-        } else {
-            self.insert("");
         }
     }
 
@@ -397,6 +398,14 @@ impl NodeCoord {
         self.text_loc() + Vector2::new(0., line_number as f32 * NODE_LINE_HEIGHT)
     }
 
+    fn char_pos(&self, line: usize, column: usize) -> Vector2 {
+        self.text_loc()
+            + Vector2::new(
+                column as f32 * NODE_CHAR_WIDTH,
+                line as f32 * NODE_LINE_HEIGHT,
+            )
+    }
+
     fn center(&self) -> Vector2 {
         self.top_left_corner() + Vector2::one().scale_by(NODE_OUTSIDE_SIDE_LENGTH / 2.)
     }
@@ -454,27 +463,18 @@ fn main() {
 
         let input = get_input(&mut rl, &mut repeat_key);
 
-        let new_state = match update(state, input) {
+        let output;
+        (state, output) = match update(state, input) {
             Update::Exit => break,
-            Update::Update { new: data, output } => {
-                if let Some(copied) = output.clipboard {
-                    rl.set_clipboard_text(&copied)
-                        .expect("this shouldn't be possible");
-                }
-
-                data
-            }
+            Update::Update { new: data, output } => (data, output),
         };
 
-        if let Some(Node::Exec(exec_node)) =
-            new_state.model.nodes.get(&new_state.model.highlighted_node)
-        {
-            println!("{}", exec_node.selection())
+        if let Some(copied) = output.clipboard {
+            rl.set_clipboard_text(&copied)
+                .expect("this shouldn't be possible");
         }
 
-        render(&mut rl, &thread, &new_state, &font);
-
-        state = new_state;
+        render(&mut rl, &thread, &state, &font);
     }
 }
 
@@ -610,31 +610,157 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
 }
 
 fn render_node_text(d: &mut impl RaylibDraw, node: &ExecNode, node_loc: &NodeCoord, font: &Font) {
-    if let Some(ref exec) = node.exec
+    let highlight = if let Some(ref exec) = node.exec
         && let Some(instr) = exec.code.get(exec.ip as usize)
     {
-        let highlighted_line = instr.src_line;
-        let highlight_type = match exec.io {
-            NodeIO::None => Highlight::Executing,
-            NodeIO::Inbound(_) | NodeIO::Outbound(_, _) => Highlight::IO,
-        };
+        Highlight::Executing {
+            line: instr.src_line as usize,
+            blocked: !matches!(exec.io, NodeIO::None),
+        }
+    } else if node.text_selected() {
+        let (start, end) = node.selection_range();
 
-        for (line_no, line) in node.text.split('\n').enumerate() {
-            let line_loc = node_loc.line_pos(line_no);
+        let (start_line, start_col) = line_column(&node.text, start);
+        let (end_line, end_col) = line_column(&node.text, end);
 
-            let highlight = if line_no == highlighted_line as usize {
-                highlight_type
-            } else {
-                Highlight::None
-            };
-
-            render_node_text_line(d, line_loc, line, highlight, font);
+        Highlight::Selected {
+            start_line,
+            start_col,
+            end_line,
+            end_col,
         }
     } else {
-        for (line_no, line) in node.text.split('\n').enumerate() {
-            let line_loc = node_loc.line_pos(line_no);
+        Highlight::None
+    };
 
-            render_node_text_line(d, line_loc, line, Highlight::None, font);
+    for (line_no, line_text) in node.text.split('\n').enumerate() {
+        let line_loc = node_loc.line_pos(line_no);
+
+        match highlight {
+            Highlight::Executing { line, blocked } if line == line_no => {
+                let highlight_color = if blocked { Color::GRAY } else { Color::WHITE };
+
+                let highlight_pos = line_loc
+                    - Vector2 {
+                        x: NODE_INSIDE_PADDING * 0.25,
+                        y: 0.0,
+                    };
+
+                const HIGHLIGHT_SIZE: Vector2 = Vector2 {
+                    x: NODE_TEXT_BOX_WIDTH + NODE_INSIDE_PADDING * 0.5,
+                    y: NODE_LINE_HEIGHT,
+                };
+
+                d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, highlight_color);
+
+                d.draw_text_ex(
+                    font,
+                    line_text,
+                    line_loc,
+                    NODE_FONT_SIZE,
+                    NODE_FONT_SPACING,
+                    Color::BLACK,
+                );
+            }
+
+            Highlight::Selected {
+                start_line,
+                start_col,
+                end_line,
+                end_col,
+            } if start_line <= line_no && line_no <= end_line => {
+                if let Some(comment_start) = line_text.find('#') {
+                    let char_offset = Vector2::new(NODE_CHAR_WIDTH, 0.0);
+                    let comment_offset = char_offset.scale_by(comment_start as f32);
+
+                    d.draw_text_ex(
+                        font,
+                        &line_text[..comment_start],
+                        line_loc,
+                        NODE_FONT_SIZE,
+                        NODE_FONT_SPACING,
+                        Color::WHITE,
+                    );
+                    d.draw_text_ex(
+                        font,
+                        &line_text[comment_start..],
+                        line_loc + comment_offset,
+                        NODE_FONT_SIZE,
+                        NODE_FONT_SPACING,
+                        Color::GRAY,
+                    );
+                } else {
+                    d.draw_text_ex(
+                        font,
+                        line_text,
+                        line_loc,
+                        NODE_FONT_SIZE,
+                        NODE_FONT_SPACING,
+                        Color::WHITE,
+                    );
+                }
+
+                let selection_start = if start_line == line_no { start_col } else { 0 };
+
+                let selection_end = if end_line == line_no {
+                    end_col
+                } else {
+                    line_text.len()
+                };
+
+                let selection_len = selection_end - selection_start;
+
+                let select_highlight_pos = node_loc.char_pos(line_no, selection_start);
+
+                let selection_box_size = Vector2 {
+                    x: selection_len as f32 * NODE_CHAR_WIDTH,
+                    y: NODE_LINE_HEIGHT,
+                };
+
+                d.draw_rectangle_v(select_highlight_pos, selection_box_size, Color::GRAY);
+
+                d.draw_text_ex(
+                    font,
+                    line_text,
+                    line_loc,
+                    NODE_FONT_SIZE,
+                    NODE_FONT_SPACING,
+                    Color::WHITE,
+                );
+            }
+
+            Highlight::None | Highlight::Executing { .. } | Highlight::Selected { .. } => {
+                if let Some(comment_start) = line_text.find('#') {
+                    let char_offset = Vector2::new(NODE_CHAR_WIDTH, 0.0);
+                    let comment_offset = char_offset.scale_by(comment_start as f32);
+
+                    d.draw_text_ex(
+                        font,
+                        &line_text[..comment_start],
+                        line_loc,
+                        NODE_FONT_SIZE,
+                        NODE_FONT_SPACING,
+                        Color::WHITE,
+                    );
+                    d.draw_text_ex(
+                        font,
+                        &line_text[comment_start..],
+                        line_loc + comment_offset,
+                        NODE_FONT_SIZE,
+                        NODE_FONT_SPACING,
+                        Color::GRAY,
+                    );
+                } else {
+                    d.draw_text_ex(
+                        font,
+                        line_text,
+                        line_loc,
+                        NODE_FONT_SIZE,
+                        NODE_FONT_SPACING,
+                        Color::WHITE,
+                    );
+                }
+            }
         }
     }
 }
@@ -642,74 +768,16 @@ fn render_node_text(d: &mut impl RaylibDraw, node: &ExecNode, node_loc: &NodeCoo
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 enum Highlight {
     None,
-    Executing,
-    IO,
-}
-
-fn render_node_text_line(
-    d: &mut impl RaylibDraw,
-    line_loc: Vector2,
-    text: &str,
-    highlight_mode: Highlight,
-    font: &Font,
-) {
-    let (comment_color, text_color) = if highlight_mode == Highlight::None {
-        (Color::GRAY, Color::WHITE)
-    } else {
-        (Color::BLACK, Color::BLACK)
-    };
-
-    if highlight_mode != Highlight::None {
-        let highlight_color = if highlight_mode == Highlight::Executing {
-            Color::WHITE
-        } else {
-            Color::GRAY
-        };
-
-        let highlight_pos = line_loc
-            - Vector2 {
-                x: NODE_INSIDE_PADDING * 0.25,
-                y: 0.0,
-            };
-
-        const HIGHLIGHT_SIZE: Vector2 = Vector2 {
-            x: NODE_TEXT_BOX_WIDTH + NODE_INSIDE_PADDING * 0.5,
-            y: NODE_LINE_HEIGHT,
-        };
-
-        d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, highlight_color);
-    }
-
-    if let Some(comment_start) = text.find('#') {
-        let char_offset = Vector2::new(NODE_CHAR_WIDTH, 0.0);
-        let comment_offset = char_offset.scale_by(comment_start as f32);
-
-        d.draw_text_ex(
-            font,
-            &text[..comment_start],
-            line_loc,
-            NODE_FONT_SIZE,
-            NODE_FONT_SPACING,
-            text_color,
-        );
-        d.draw_text_ex(
-            font,
-            &text[comment_start..],
-            line_loc + comment_offset,
-            NODE_FONT_SIZE,
-            NODE_FONT_SPACING,
-            comment_color,
-        );
-    } else {
-        d.draw_text_ex(
-            font,
-            text,
-            line_loc,
-            NODE_FONT_SIZE,
-            NODE_FONT_SPACING,
-            text_color,
-        );
-    }
+    Executing {
+        line: usize,
+        blocked: bool,
+    },
+    Selected {
+        start_line: usize,
+        start_col: usize,
+        end_line: usize,
+        end_col: usize,
+    },
 }
 
 fn show_error(
@@ -718,7 +786,16 @@ fn show_error(
     highlighted_node: &NodeCoord,
     error_line: u8,
 ) -> bool {
-    node_loc != highlighted_node || line_column(&node.text, node.cursor).0 != error_line as usize
+    let (select_start, select_end) = node.selection_range();
+    let select_start_line = line_column(&node.text, select_start).0;
+    let select_end_line = line_column(&node.text, select_end).0;
+
+    let error_line = error_line as usize;
+
+    let node_is_highlighted = node_loc == highlighted_node;
+    let cursor_at_error_line = select_start_line <= error_line && error_line <= select_end_line;
+
+    !node_is_highlighted || !cursor_at_error_line
 }
 
 fn render_error_msg(
@@ -1669,6 +1746,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                     Ok(()) => Update::no_output(Model { ghosts, ..model }),
 
                     Err(err) => {
+                        // TODO: show this to the user
                         println!("io error while saving file: {:?}", err);
                         Update::no_output(Model { ghosts, ..model })
                     }
