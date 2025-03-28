@@ -1590,39 +1590,6 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                     ..model
                 }),
             }
-
-            // match (
-            //     &model.node_clipboard,
-            //     nodes.get_mut(&model.highlighted_node),
-            // ) {
-            //     (Some(copied_node), None) => {
-            //         nodes
-            //             .try_insert(model.highlighted_node, copied_node.clone())
-            //             .unwrap();
-
-            //         Update::no_output(Model {
-            //             nodes,
-            //             ghosts,
-            //             ..model
-            //         })
-            //     }
-
-            //     (_, Some(Node::Exec(exec_node))) => {
-            //         exec_node.insert(&input.clipboard);
-
-            //         Update::no_output(Model {
-            //             ghosts,
-            //             nodes,
-            //             ..model
-            //         })
-            //     }
-
-            //     (_, None) => Update::no_output(Model {
-            //         ghosts,
-            //         nodes,
-            //         ..model
-            //     }),
-            // }
         }
 
         (Modifiers::Ctrl, Key::Char('O')) => {
