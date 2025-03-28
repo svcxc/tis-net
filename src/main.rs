@@ -5,7 +5,11 @@
 #![feature(map_many_mut)]
 #![feature(iter_intersperse)]
 
-use std::{collections::HashMap, f32, fmt::Debug};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    f32,
+    fmt::Debug,
+};
 
 use arrayvec::{ArrayString, ArrayVec};
 use raylib::prelude::*;
@@ -140,16 +144,21 @@ impl ExecNode {
     }
 
     fn backspace(&mut self) {
-        if self.select_cursor == self.cursor {
+        if self.text_selected() {
             let Some(index) = self.cursor.checked_sub(1) else {
                 return;
             };
 
             self.text.remove(index);
             self.cursor = index;
+            self.update_error();
         } else {
             self.insert("");
         }
+    }
+
+    fn text_selected(&self) -> bool {
+        self.cursor != self.select_cursor
     }
 
     fn selection_range(&self) -> (usize, usize) {
@@ -174,6 +183,7 @@ impl ExecNode {
             self.text = new_text;
             self.cursor = select_start + txt.len();
             self.deselect();
+            self.update_error();
         }
     }
 
@@ -444,8 +454,16 @@ fn main() {
 
         let input = get_input(&mut rl, &mut repeat_key);
 
-        let Some(new_state) = update(state, input) else {
-            break;
+        let new_state = match update(state, input) {
+            Update::Exit => break,
+            Update::Update { new: data, output } => {
+                if let Some(copied) = output.clipboard {
+                    rl.set_clipboard_text(&copied)
+                        .expect("this shouldn't be possible");
+                }
+
+                data
+            }
         };
 
         if let Some(Node::Exec(exec_node)) =
@@ -1087,12 +1105,13 @@ fn render_dashed_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_
     );
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Input {
     mods: Modifiers,
     pressed: Option<Key>,
     window_dimensions: (i32, i32),
     mouse_wheel_move: f32,
+    clipboard: String,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -1284,28 +1303,62 @@ fn get_input(rl: &mut RaylibHandle, repeat: &mut RepeatKey) -> Input {
         raylib_key_pressed.and_then(|rk| Key::from(rk, shift_held))
     };
 
+    let clipboard = match rl.get_clipboard_text() {
+        Ok(text) if text.is_ascii() => text.to_ascii_uppercase(),
+
+        Ok(_) | Err(_) => String::new(),
+    };
+
     Input {
         mods,
         pressed,
         window_dimensions: (rl.get_screen_width(), rl.get_screen_height()),
         mouse_wheel_move: rl.get_mouse_wheel_move(),
+        clipboard,
     }
 }
 
-fn update(state: State, input: Input) -> Option<State> {
-    let model = handle_input(state.model, &input)?;
-
-    let camera = update_camera(
-        state.camera,
-        model.highlighted_node,
-        input.window_dimensions,
-        input.mouse_wheel_move,
-    );
-
-    Some(State { camera, model })
+struct Output {
+    clipboard: Option<String>,
 }
 
-fn handle_input(model: Model, input: &Input) -> Option<Model> {
+enum Update<T> {
+    Exit,
+    Update { new: T, output: Output },
+}
+
+impl<T> Update<T> {
+    fn no_output(new: T) -> Self {
+        Update::Update {
+            new,
+            output: Output { clipboard: None },
+        }
+    }
+}
+
+fn update(state: State, input: Input) -> Update<State> {
+    match handle_input(state.model, &input) {
+        Update::Exit => {
+            return Update::Exit;
+        }
+
+        Update::Update { new, output } => {
+            let camera = update_camera(
+                state.camera,
+                new.highlighted_node,
+                input.window_dimensions,
+                input.mouse_wheel_move,
+            );
+
+            Update::Update {
+                new: State { camera, model: new },
+                output,
+            }
+        }
+    }
+}
+
+fn handle_input(model: Model, input: &Input) -> Update<Model> {
     // the old ghosts value should not be reused, this enforces it
     std::mem::drop(model.ghosts);
 
@@ -1316,7 +1369,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
     };
 
     let Some(pressed) = input.pressed else {
-        return Some(Model { ghosts, ..model });
+        return Update::no_output(Model { ghosts, ..model });
     };
 
     match (input.mods, pressed) {
@@ -1326,13 +1379,13 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
                 nodes.extend(updated_nodes);
 
-                Some(Model {
+                Update::no_output(Model {
                     ghosts,
                     nodes,
                     ..model
                 })
             } else {
-                None
+                Update::Exit
             }
         }
 
@@ -1342,13 +1395,13 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
                 nodes.extend(updated_nodes);
 
-                Some(Model {
+                Update::no_output(Model {
                     nodes,
                     ghosts,
                     ..model
                 })
             } else {
-                Some(Model { ghosts, ..model })
+                Update::no_output(Model { ghosts, ..model })
             }
         }
 
@@ -1369,14 +1422,14 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                         exec_node.deselect();
                     }
 
-                    Some(Model {
+                    Update::no_output(Model {
                         nodes,
                         ghosts,
                         ..model
                     })
                 }
 
-                None => Some(Model {
+                None => Update::no_output(Model {
                     nodes,
                     ghosts,
                     ..model
@@ -1384,7 +1437,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::Ctrl, Key::Arrow(dir)) => Some(Model {
+        (Modifiers::Ctrl, Key::Arrow(dir)) => Update::no_output(Model {
             highlighted_node: model.highlighted_node.neighbor(dir),
             ghosts,
             ..model
@@ -1399,14 +1452,14 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
                 nodes.try_insert(dst, node).unwrap();
 
-                Some(Model {
+                Update::no_output(Model {
                     nodes,
                     ghosts,
                     highlighted_node: dst,
                     ..model
                 })
             } else {
-                Some(Model {
+                Update::no_output(Model {
                     nodes,
                     ghosts,
                     ..model
@@ -1419,7 +1472,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
             nodes.remove(&model.highlighted_node);
 
-            Some(Model {
+            Update::no_output(Model {
                 nodes,
                 ghosts,
                 ..model
@@ -1428,46 +1481,148 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
         (Modifiers::Ctrl, Key::Char('C')) => {
             if let Some(node) = model.nodes.get(&model.highlighted_node) {
-                Some(Model {
-                    ghosts,
-                    node_clipboard: Some(node.clone()),
-                    ..model
-                })
+                match node {
+                    Node::Exec(exec_node) if exec_node.text_selected() => {
+                        let selection = exec_node.selection().to_string();
+                        Update::Update {
+                            new: Model {
+                                ghosts,
+                                node_clipboard: None,
+                                ..model
+                            },
+                            output: Output {
+                                clipboard: Some(selection),
+                            },
+                        }
+                    }
+
+                    Node::Exec(exec_node) => {
+                        let node_text = exec_node.text.to_string();
+
+                        Update::Update {
+                            new: Model {
+                                ghosts,
+                                node_clipboard: Some(node.clone()),
+                                ..model
+                            },
+                            output: Output {
+                                clipboard: Some(node_text),
+                            },
+                        }
+                    }
+                }
             } else {
-                Some(Model { ghosts, ..model })
+                Update::no_output(Model { ghosts, ..model })
             }
         }
 
         (Modifiers::Ctrl, Key::Char('X')) => {
             let mut nodes = model.nodes;
-            if let Some(node) = nodes.remove(&model.highlighted_node) {
-                Some(Model {
-                    nodes,
+
+            match nodes.entry(model.highlighted_node) {
+                Entry::Vacant(_) => Update::no_output(Model {
                     ghosts,
-                    node_clipboard: Some(node.clone()),
-                    ..model
-                })
-            } else {
-                Some(Model {
                     nodes,
-                    ghosts,
                     ..model
-                })
+                }),
+
+                Entry::Occupied(mut entry) => match entry.get_mut() {
+                    Node::Exec(exec_node) if exec_node.text_selected() => {
+                        let selection = exec_node.selection().to_string();
+
+                        exec_node.insert("");
+
+                        Update::Update {
+                            new: Model {
+                                ghosts,
+                                nodes,
+                                ..model
+                            },
+                            output: Output {
+                                clipboard: Some(selection),
+                            },
+                        }
+                    }
+
+                    Node::Exec(_) => {
+                        let cut_node = entry.remove();
+
+                        Update::no_output(Model {
+                            ghosts,
+                            nodes,
+                            node_clipboard: Some(cut_node),
+                            ..model
+                        })
+                    }
+                },
             }
         }
 
         (Modifiers::Ctrl, Key::Char('V')) => {
             let mut nodes = model.nodes;
 
-            if let Some(ref copied_node) = model.node_clipboard {
-                let _ = nodes.try_insert(model.highlighted_node, copied_node.clone());
+            match (&model.node_clipboard, nodes.entry(model.highlighted_node)) {
+                (Some(copied_node), Entry::Vacant(vacant_entry)) => {
+                    vacant_entry.insert(copied_node.clone());
+
+                    Update::no_output(Model {
+                        nodes,
+                        ghosts,
+                        ..model
+                    })
+                }
+
+                (_, Entry::Occupied(mut occupied_entry)) => match occupied_entry.get_mut() {
+                    Node::Exec(exec_node) => {
+                        exec_node.insert(&input.clipboard);
+
+                        Update::no_output(Model {
+                            ghosts,
+                            nodes,
+                            ..model
+                        })
+                    }
+                },
+
+                (_, Entry::Vacant(_)) => Update::no_output(Model {
+                    ghosts,
+                    nodes,
+                    ..model
+                }),
             }
 
-            Some(Model {
-                nodes,
-                ghosts,
-                ..model
-            })
+            // match (
+            //     &model.node_clipboard,
+            //     nodes.get_mut(&model.highlighted_node),
+            // ) {
+            //     (Some(copied_node), None) => {
+            //         nodes
+            //             .try_insert(model.highlighted_node, copied_node.clone())
+            //             .unwrap();
+
+            //         Update::no_output(Model {
+            //             nodes,
+            //             ghosts,
+            //             ..model
+            //         })
+            //     }
+
+            //     (_, Some(Node::Exec(exec_node))) => {
+            //         exec_node.insert(&input.clipboard);
+
+            //         Update::no_output(Model {
+            //             ghosts,
+            //             nodes,
+            //             ..model
+            //         })
+            //     }
+
+            //     (_, None) => Update::no_output(Model {
+            //         ghosts,
+            //         nodes,
+            //         ..model
+            //     }),
+            // }
         }
 
         (Modifiers::Ctrl, Key::Char('O')) => {
@@ -1478,7 +1633,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             {
                 match std::fs::read_to_string(path) {
                     Ok(toml) => match parse_toml(&toml) {
-                        Ok((nodes, highlighted_node)) => Some(Model {
+                        Ok((nodes, highlighted_node)) => Update::no_output(Model {
                             nodes,
                             highlighted_node,
                             ghosts,
@@ -1501,7 +1656,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
                             let nodes = Nodes::from([(origin, node)]);
 
-                            Some(Model {
+                            Update::no_output(Model {
                                 nodes,
                                 ghosts,
                                 ..model
@@ -1522,7 +1677,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
                         let nodes = Nodes::from([(origin, node)]);
 
-                        Some(Model {
+                        Update::no_output(Model {
                             nodes,
                             ghosts,
                             ..model
@@ -1530,7 +1685,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                     }
                 }
             } else {
-                Some(Model { ghosts, ..model })
+                Update::no_output(Model { ghosts, ..model })
             }
         }
 
@@ -1544,15 +1699,15 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                 let toml = serialize_toml(&model.nodes, Some(model.highlighted_node));
 
                 match std::fs::write(path, toml) {
-                    Ok(()) => Some(Model { ghosts, ..model }),
+                    Ok(()) => Update::no_output(Model { ghosts, ..model }),
 
                     Err(err) => {
                         println!("io error while saving file: {:?}", err);
-                        Some(Model { ghosts, ..model })
+                        Update::no_output(Model { ghosts, ..model })
                     }
                 }
             } else {
-                Some(Model { ghosts, ..model })
+                Update::no_output(Model { ghosts, ..model })
             }
         }
 
@@ -1566,7 +1721,6 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                     let mut buf = [0; std::mem::size_of::<char>()];
 
                     exec_node.insert(char.encode_utf8(&mut buf));
-                    exec_node.update_error();
                 }
 
                 None => {
@@ -1578,7 +1732,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                 }
             }
 
-            Some(Model {
+            Update::no_output(Model {
                 nodes,
                 ghosts,
                 ..model
@@ -1598,7 +1752,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                 }
             }
 
-            Some(Model {
+            Update::no_output(Model {
                 nodes,
                 ghosts,
                 ..model
@@ -1618,7 +1772,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                 }
             }
 
-            Some(Model {
+            Update::no_output(Model {
                 nodes,
                 ghosts,
                 ..model
@@ -1630,10 +1784,9 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
                 exec_node.backspace();
-                exec_node.update_error();
             }
 
-            Some(Model {
+            Update::no_output(Model {
                 nodes,
                 ghosts,
                 ..model
@@ -1647,10 +1800,9 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
                 let select = mods == Modifiers::Shift;
 
                 exec_node.enter(select);
-                exec_node.update_error();
             }
 
-            Some(Model {
+            Update::no_output(Model {
                 nodes,
                 ghosts,
                 ..model
@@ -1668,7 +1820,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             | Key::Char(_),
         )
         | (Modifiers::Shift, Key::Backspace | Key::Delete | Key::Tab) => {
-            Some(Model { ghosts, ..model })
+            Update::no_output(Model { ghosts, ..model })
         }
     }
 }
