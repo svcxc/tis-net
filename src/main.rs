@@ -45,14 +45,12 @@ struct Model {
     node_clipboard: Option<Node>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Modifiers {
-    /// no modifier keys are held
     None,
-    /// ctrl is held
-    CtrlShift,
-    /// ctrl + shift are held
     Ctrl,
+    Shift,
+    CtrlShift,
 }
 
 #[derive(PartialEq, Eq)]
@@ -85,6 +83,7 @@ impl Node {
         let mut exec_node = ExecNode {
             text,
             cursor: 0,
+            select_cursor: 0,
             error: None,
             exec: None,
         };
@@ -105,6 +104,7 @@ impl Node {
         let mut exec_node = ExecNode {
             text,
             cursor: 0,
+            select_cursor: 0,
             error: None,
             exec: None,
         };
@@ -119,6 +119,7 @@ impl Node {
 struct ExecNode {
     text: NodeText,
     cursor: usize,
+    select_cursor: usize,
     error: Option<ParseErr>,
     exec: Option<NodeExec>,
 }
@@ -128,6 +129,7 @@ impl ExecNode {
         Self {
             text: ArrayString::new(),
             cursor: 0,
+            select_cursor: 0,
             error: None,
             exec: None,
         }
@@ -138,40 +140,74 @@ impl ExecNode {
     }
 
     fn backspace(&mut self) {
-        let Some(index) = self.cursor.checked_sub(1) else {
-            return;
-        };
+        if self.select_cursor == self.cursor {
+            let Some(index) = self.cursor.checked_sub(1) else {
+                return;
+            };
 
-        self.text.remove(index);
-        self.cursor = index;
-    }
-
-    fn insert(&mut self, char: char) {
-        let mut new_text = ArrayString::new();
-
-        new_text.push_str(&self.text[..self.cursor]);
-        new_text.push(char);
-        new_text.push_str(&self.text[self.cursor..]);
-
-        if validate(&new_text) {
-            self.text = new_text;
-            self.cursor += 1;
+            self.text.remove(index);
+            self.cursor = index;
+        } else {
+            self.insert("");
         }
     }
 
-    fn enter(&mut self) {
-        self.insert('\n');
+    fn selection_range(&self) -> (usize, usize) {
+        if self.cursor > self.select_cursor {
+            (self.select_cursor, self.cursor)
+        } else {
+            (self.cursor, self.select_cursor)
+        }
     }
 
-    fn right(&mut self) {
+    /// if text is selected, this replaces it
+    fn insert(&mut self, txt: &str) {
+        let (select_start, select_end) = self.selection_range();
+
+        let mut new_text = ArrayString::new();
+
+        new_text.push_str(&self.text[..select_start]);
+        new_text.push_str(txt);
+        new_text.push_str(&self.text[select_end..]);
+
+        if validate(&new_text) {
+            self.text = new_text;
+            self.cursor = select_start + txt.len();
+            self.deselect();
+        }
+    }
+
+    fn selection(&self) -> &str {
+        let (select_start, select_end) = self.selection_range();
+
+        &self.text[select_start..select_end]
+    }
+
+    fn enter(&mut self, select: bool) {
+        self.insert("\n");
+
+        if !select {
+            self.deselect();
+        }
+    }
+
+    fn right(&mut self, select: bool) {
         self.cursor = usize::min(self.cursor + 1, self.text.len());
+
+        if !select {
+            self.deselect();
+        }
     }
 
-    fn left(&mut self) {
+    fn left(&mut self, select: bool) {
         self.cursor = self.cursor.saturating_sub(1);
+
+        if !select {
+            self.deselect();
+        }
     }
 
-    fn target(&mut self, target_line: usize, target_column: usize) {
+    fn target(&self, target_line: usize, target_column: usize) -> usize {
         let mut chars = self.text.chars();
         let mut line = 0;
         let mut column = 0;
@@ -197,28 +233,36 @@ impl ExecNode {
             }
         }
 
-        self.cursor = cursor;
+        cursor
     }
 
-    fn up(&mut self) {
+    fn up(&mut self, select: bool) {
         let (line, target_column) = line_column(&self.text, self.cursor);
 
         let Some(target_line) = line.checked_sub(1) else {
             return;
         };
 
-        self.target(target_line, target_column)
+        self.cursor = self.target(target_line, target_column);
+
+        if !select {
+            self.deselect();
+        }
     }
 
-    fn down(&mut self) {
+    fn down(&mut self, select: bool) {
         let (line, target_column) = line_column(&self.text, self.cursor);
 
         let target_line = line + 1;
 
-        self.target(target_line, target_column)
+        self.cursor = self.target(target_line, target_column);
+
+        if !select {
+            self.deselect();
+        }
     }
 
-    fn home(&mut self) {
+    fn home(&mut self, select: bool) {
         let mut cursor = self.cursor;
 
         for char in self.text.chars().rev().skip(self.text.len() - self.cursor) {
@@ -230,9 +274,13 @@ impl ExecNode {
         }
 
         self.cursor = cursor;
+
+        if !select {
+            self.deselect();
+        }
     }
 
-    fn end(&mut self) {
+    fn end(&mut self, select: bool) {
         let mut cursor = self.cursor;
 
         for char in self.text.chars().skip(self.cursor) {
@@ -244,6 +292,14 @@ impl ExecNode {
         }
 
         self.cursor = cursor;
+
+        if !select {
+            self.deselect();
+        }
+    }
+
+    fn deselect(&mut self) {
+        self.select_cursor = self.cursor;
     }
 
     fn update_error(&mut self) {
@@ -391,6 +447,12 @@ fn main() {
         let Some(new_state) = update(state, input) else {
             break;
         };
+
+        if let Some(Node::Exec(exec_node)) =
+            new_state.model.nodes.get(&new_state.model.highlighted_node)
+        {
+            println!("{}", exec_node.selection())
+        }
 
         render(&mut rl, &thread, &new_state, &font);
 
@@ -1195,7 +1257,8 @@ fn get_input(rl: &mut RaylibHandle, repeat: &mut RepeatKey) -> Input {
     let mods = match (ctrl_held, shift_held) {
         (true, true) => Modifiers::CtrlShift,
         (true, false) => Modifiers::Ctrl,
-        (false, _) => Modifiers::None,
+        (false, true) => Modifiers::Shift,
+        (false, false) => Modifiers::None,
     };
 
     let raylib_key_pressed = rl.get_key_pressed();
@@ -1249,7 +1312,7 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
     let ghosts = match input.mods {
         Modifiers::Ctrl => Ghosts::MoveView,
         Modifiers::CtrlShift => Ghosts::MoveNode,
-        Modifiers::None => Ghosts::None,
+        Modifiers::Shift | Modifiers::None => Ghosts::None,
     };
 
     let Some(pressed) = input.pressed else {
@@ -1289,16 +1352,23 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::None, Key::Arrow(dir)) => {
+        (mods @ (Modifiers::None | Modifiers::Shift), Key::Arrow(dir)) => {
             let mut nodes = model.nodes;
             match nodes.get_mut(&model.highlighted_node) {
                 Some(Node::Exec(exec_node)) => {
+                    let select = mods == Modifiers::Shift;
+
                     match dir {
-                        Dir::Up => exec_node.up(),
-                        Dir::Down => exec_node.down(),
-                        Dir::Left => exec_node.left(),
-                        Dir::Right => exec_node.right(),
+                        Dir::Up => exec_node.up(select),
+                        Dir::Down => exec_node.down(select),
+                        Dir::Left => exec_node.left(select),
+                        Dir::Right => exec_node.right(select),
                     };
+
+                    if !select {
+                        exec_node.deselect();
+                    }
+
                     Some(Model {
                         nodes,
                         ghosts,
@@ -1486,12 +1556,16 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             }
         }
 
-        (Modifiers::None, Key::Char(char)) => {
+        (Modifiers::None | Modifiers::Shift, Key::Char(char)) => {
             let mut nodes = model.nodes;
 
             match nodes.get_mut(&model.highlighted_node) {
                 Some(Node::Exec(exec_node)) => {
-                    exec_node.insert(char);
+                    // apparently this is the easiest way to turn a `char` into a `&str`
+                    // (without allocating a single-char `String` first`)
+                    let mut buf = [0; std::mem::size_of::<char>()];
+
+                    exec_node.insert(char.encode_utf8(&mut buf));
                     exec_node.update_error();
                 }
 
@@ -1511,11 +1585,17 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::None, Key::Home) => {
+        (mods @ (Modifiers::None | Modifiers::Shift), Key::Home) => {
             let mut nodes = model.nodes;
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
-                exec_node.home();
+                let select = mods == Modifiers::Shift;
+
+                exec_node.home(select);
+
+                if !select {
+                    exec_node.deselect();
+                }
             }
 
             Some(Model {
@@ -1525,11 +1605,17 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::None, Key::End) => {
+        (mods @ (Modifiers::None | Modifiers::Shift), Key::End) => {
             let mut nodes = model.nodes;
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
-                exec_node.end();
+                let select = mods == Modifiers::Shift;
+
+                exec_node.end(select);
+
+                if !select {
+                    exec_node.deselect();
+                }
             }
 
             Some(Model {
@@ -1554,11 +1640,13 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             })
         }
 
-        (Modifiers::None, Key::Enter) => {
+        (mods @ (Modifiers::None | Modifiers::Shift), Key::Enter) => {
             let mut nodes = model.nodes;
 
             if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
-                exec_node.enter();
+                let select = mods == Modifiers::Shift;
+
+                exec_node.enter(select);
                 exec_node.update_error();
             }
 
@@ -1578,7 +1666,10 @@ fn handle_input(model: Model, input: &Input) -> Option<Model> {
             | Key::End
             | Key::Tab
             | Key::Char(_),
-        ) => Some(Model { ghosts, ..model }),
+        )
+        | (Modifiers::Shift, Key::Backspace | Key::Delete | Key::Tab) => {
+            Some(Model { ghosts, ..model })
+        }
     }
 }
 
