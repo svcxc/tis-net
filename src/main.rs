@@ -250,11 +250,10 @@ impl ExecNode {
     fn up(&mut self, select: bool) {
         let (line, target_column) = line_column(&self.text, self.cursor);
 
-        let Some(target_line) = line.checked_sub(1) else {
-            return;
-        };
-
-        self.cursor = self.target(target_line, target_column);
+        self.cursor = line
+            .checked_sub(1)
+            .map(|target_line| self.target(target_line, target_column))
+            .unwrap_or(0);
 
         if !select {
             self.deselect();
