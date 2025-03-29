@@ -1,5 +1,3 @@
-- implement key repeat behavior when a key is held
-- add text selection & cut/copy/paste
 - allow user to let nodes execute without manually stepping
 - allow optional comma between instruction arguments
 - add ANY and LAST ports
