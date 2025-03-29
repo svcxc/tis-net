@@ -465,7 +465,7 @@ fn main() {
         let output;
         (state, output) = match update(state, input) {
             Update::Exit => break,
-            Update::Update { new: data, output } => (data, output),
+            Update::Update { new, output } => (new, output),
         };
 
         if let Some(copied) = output.clipboard {
