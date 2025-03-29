@@ -176,11 +176,13 @@ impl ExecNode {
 
         let mut new_text = ArrayString::new();
 
-        new_text.push_str(&self.text[..select_start]);
-        new_text.push_str(txt);
-        new_text.push_str(&self.text[select_end..]);
+        let push_results = [
+            new_text.try_push_str(&self.text[..select_start]),
+            new_text.try_push_str(txt),
+            new_text.try_push_str(&self.text[select_end..]),
+        ];
 
-        if validate(&new_text) {
+        if push_results.iter().all(Result::is_ok) && validate(&new_text) {
             self.text = new_text;
             self.cursor = select_start + txt.len();
             self.deselect();
