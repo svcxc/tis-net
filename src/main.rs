@@ -321,6 +321,11 @@ impl ExecNode {
             None
         }
     }
+
+    fn select_all(&mut self) {
+        self.select_cursor = 0;
+        self.cursor = self.text.len();
+    }
 }
 
 fn validate(node_text: &NodeText) -> bool {
@@ -1555,6 +1560,30 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                 ghosts,
                 ..model
             })
+        }
+
+        (Modifiers::Ctrl, Key::Char('A')) => {
+            let mut nodes = model.nodes;
+
+            if let Some(node) = nodes.get_mut(&model.highlighted_node) {
+                match node {
+                    Node::Exec(exec_node) => {
+                        exec_node.select_all();
+
+                        Update::no_output(Model {
+                            nodes,
+                            ghosts,
+                            ..model
+                        })
+                    }
+                }
+            } else {
+                Update::no_output(Model {
+                    nodes,
+                    ghosts,
+                    ..model
+                })
+            }
         }
 
         (Modifiers::Ctrl, Key::Char('C')) => {
