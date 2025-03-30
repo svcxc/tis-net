@@ -1452,7 +1452,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
     match (input.mods, pressed) {
         (_, Key::Esc) => {
             if let Some(updated_nodes) = stop_execution(&model.nodes, model.highlighted_node) {
-                let mut nodes = model.nodes.clone();
+                let mut nodes = model.nodes;
 
                 nodes.extend(updated_nodes);
 
@@ -1468,7 +1468,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
 
         (Modifiers::None, Key::Tab) => {
             if let Some(updated_nodes) = step_execution(&model.nodes, model.highlighted_node) {
-                let mut nodes = model.nodes.clone();
+                let mut nodes = model.nodes;
 
                 nodes.extend(updated_nodes);
 
