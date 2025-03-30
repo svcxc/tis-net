@@ -711,7 +711,7 @@ fn render_node_text(d: &mut impl RaylibDraw, node: &ExecNode, node_loc: &NodeCoo
                 let selection_end = if end_line == line_no {
                     end_col
                 } else {
-                    line_text.len()
+                    line_text.len() + 1
                 };
 
                 let selection_len = selection_end - selection_start;
