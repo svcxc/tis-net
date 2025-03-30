@@ -27,9 +27,10 @@ const NODE_OUTSIDE_PADDING: f32 = 100.;
 const NODE_OUTSIDE_SIDE_LENGTH: f32 = NODE_INSIDE_SIDE_LENGTH + 2. * NODE_INSIDE_PADDING;
 const GHOST_NODE_DASHES: usize = 8;
 const LINE_THICKNESS: f32 = 2.0;
-const GIZMO_OUTSIDE_SIDE_LENGTH: f32 = NODE_OUTSIDE_SIDE_LENGTH / 4.0;
-const NODE_TEXT_BOX_WIDTH: f32 =
-    NODE_OUTSIDE_SIDE_LENGTH - GIZMO_OUTSIDE_SIDE_LENGTH - NODE_INSIDE_PADDING * 2.0;
+const GIZMO_HEIGHT: f32 = NODE_OUTSIDE_SIDE_LENGTH / 4.0;
+const GIZMO_WIDTH: f32 = NODE_OUTSIDE_SIDE_LENGTH - NODE_TEXT_BOX_OUTSIDE_WIDTH;
+const NODE_TEXT_BOX_INSIDE_WIDTH: f32 = (NODE_LINE_LENGTH as f32 + 0.5) * NODE_CHAR_WIDTH;
+const NODE_TEXT_BOX_OUTSIDE_WIDTH: f32 = NODE_TEXT_BOX_INSIDE_WIDTH + 2.0 * NODE_INSIDE_PADDING;
 const KEY_REPEAT_DELAY_S: f32 = 0.5;
 const KEY_REPEAT_INTERVAL_S: f32 = 1.0 / 30.0;
 
@@ -653,7 +654,7 @@ fn render_node_text(d: &mut impl RaylibDraw, node: &ExecNode, node_loc: &NodeCoo
                     };
 
                 const HIGHLIGHT_SIZE: Vector2 = Vector2 {
-                    x: NODE_TEXT_BOX_WIDTH + NODE_INSIDE_PADDING * 0.5,
+                    x: NODE_TEXT_BOX_INSIDE_WIDTH + NODE_INSIDE_PADDING * 0.5,
                     y: NODE_LINE_HEIGHT,
                 };
 
@@ -882,14 +883,11 @@ fn render_node_gizmos(
     let placeholder_gizmos = [("ACC", acc), ("BAK", bak), ("LAST", "N/A"), ("MODE", mode)];
 
     for (i, (top, bottom)) in placeholder_gizmos.into_iter().enumerate() {
-        let gizmos_top_left = node_loc.top_right_corner()
-            - Vector2::new(
-                GIZMO_OUTSIDE_SIDE_LENGTH,
-                i as f32 * -GIZMO_OUTSIDE_SIDE_LENGTH,
-            );
+        let gizmos_top_left =
+            node_loc.top_right_corner() - Vector2::new(GIZMO_WIDTH, i as f32 * -GIZMO_HEIGHT);
 
-        let left_right = Vector2::new(GIZMO_OUTSIDE_SIDE_LENGTH, 0.0);
-        let top_down = Vector2::new(0.0, GIZMO_OUTSIDE_SIDE_LENGTH);
+        let left_right = Vector2::new(GIZMO_WIDTH, 0.0);
+        let top_down = Vector2::new(0.0, GIZMO_HEIGHT);
 
         // draws a rectangle out of individual lines
         // doing this makes the lines centered, rather than aligned to the outside
@@ -918,11 +916,7 @@ fn render_node_gizmos(
             primary,
         );
 
-        let text_center = gizmos_top_left
-            + Vector2::new(
-                GIZMO_OUTSIDE_SIDE_LENGTH / 2.,
-                GIZMO_OUTSIDE_SIDE_LENGTH / 2.,
-            );
+        let text_center = gizmos_top_left + Vector2::new(GIZMO_WIDTH / 2., GIZMO_HEIGHT / 2.);
         let text_offset = Vector2::new(0.0, NODE_LINE_HEIGHT / 2.0);
         let top_text = text_center - text_offset;
         let bottom_text = text_center + text_offset;
