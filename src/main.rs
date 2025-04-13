@@ -70,6 +70,7 @@ type NodeText = ArrayString<NODE_TEXT_BUFFER_SIZE>;
 #[derive(Clone, Debug)]
 enum Node {
     Exec(ExecNode),
+    Input(InputNode),
     // Stack,
 }
 
@@ -117,6 +118,13 @@ impl Node {
         exec_node.update_error();
 
         Some(Node::Exec(exec_node))
+    }
+
+    fn empty_input() -> Self {
+        Self::Input(InputNode {
+            data: ArrayVec::new(),
+            index: None,
+        })
     }
 }
 
@@ -354,6 +362,14 @@ fn line_column(str: &str, index: usize) -> (usize, usize) {
     (line, column)
 }
 
+const INPUT_NODE_CAP: usize = 39;
+
+#[derive(Clone, Debug)]
+struct InputNode {
+    data: ArrayVec<Num, INPUT_NODE_CAP>,
+    index: Option<usize>,
+}
+
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 struct NodeCoord {
     x: isize,
@@ -521,14 +537,20 @@ fn render(rl: &mut RaylibHandle, thread: &RaylibThread, state: &State, font: &Fo
 
     let highlighted = model.nodes.get(&model.highlighted_node);
 
-    if let Some(Node::Exec(exec_node)) = highlighted {
-        if exec_node.is_in_edit_mode() {
-            render_cursor(d, model.highlighted_node, exec_node);
+    match highlighted {
+        Some(Node::Exec(exec_node)) => {
+            if exec_node.is_in_edit_mode() {
+                render_cursor(d, model.highlighted_node, exec_node);
+            }
         }
-    } else {
-        render_dashed_node_border(d, model.highlighted_node, Color::GRAY);
 
-        render_plus(d, model.highlighted_node.center(), Color::GRAY);
+        Some(Node::Input(_)) => {}
+
+        None => {
+            render_dashed_node_border(d, model.highlighted_node, Color::GRAY);
+
+            render_plus(d, model.highlighted_node.center(), Color::GRAY);
+        }
     }
 }
 
@@ -598,6 +620,18 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
                         render_io_arrow(d, &node_loc.neighbor(io_dir), io_dir.inverse(), "?", font);
                     }
                 }
+            }
+
+            Node::Input(input_node) => {
+                render_node_border(d, *node_loc, line_color);
+
+                let text = if input_node.index.is_some() {
+                    "INPUT NODE (ACTIVE)"
+                } else {
+                    "INPUT NODE (INACTIVE)"
+                };
+
+                render_centered_text(d, text, node_loc.center(), font, Color::WHITE);
             }
         }
     }
@@ -1506,7 +1540,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                     })
                 }
 
-                None => Update::no_output(Model {
+                None | Some(Node::Input(_)) => Update::no_output(Model {
                     nodes,
                     ghosts,
                     ..model
@@ -1559,18 +1593,14 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (Modifiers::Ctrl, Key::Char('A')) => {
             let mut nodes = model.nodes;
 
-            if let Some(node) = nodes.get_mut(&model.highlighted_node) {
-                match node {
-                    Node::Exec(exec_node) => {
-                        exec_node.select_all();
+            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+                exec_node.select_all();
 
-                        Update::no_output(Model {
-                            nodes,
-                            ghosts,
-                            ..model
-                        })
-                    }
-                }
+                Update::no_output(Model {
+                    nodes,
+                    ghosts,
+                    ..model
+                })
             } else {
                 Update::no_output(Model {
                     nodes,
@@ -1611,6 +1641,14 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                             },
                         }
                     }
+
+                    // TODO: maybe this should copy the input data to
+                    // the system clipboard too?
+                    Node::Input(_input_node) => Update::no_output(Model {
+                        ghosts,
+                        node_clipboard: Some(node.clone()),
+                        ..model
+                    }),
                 }
             } else {
                 Update::no_output(Model { ghosts, ..model })
@@ -1645,7 +1683,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                         }
                     }
 
-                    Node::Exec(_) => {
+                    Node::Exec(_) | Node::Input(_) => {
                         let cut_node = entry.remove();
 
                         Update::no_output(Model {
@@ -1683,9 +1721,15 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                             ..model
                         })
                     }
+
+                    Node::Input(_) => Update::no_output(Model {
+                        ghosts,
+                        nodes,
+                        ..model
+                    }),
                 },
 
-                (_, Entry::Vacant(_)) => Update::no_output(Model {
+                (None, Entry::Vacant(_)) => Update::no_output(Model {
                     ghosts,
                     nodes,
                     ..model
@@ -1783,22 +1827,32 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (Modifiers::None | Modifiers::Shift, Key::Char(char)) => {
             let mut nodes = model.nodes;
 
-            match nodes.get_mut(&model.highlighted_node) {
-                Some(Node::Exec(exec_node)) => {
-                    // apparently this is the easiest way to turn a `char` into a `&str`
-                    // (without allocating a single-char `String` first`)
-                    let mut buf = [0; std::mem::size_of::<char>()];
+            match nodes.entry(model.highlighted_node) {
+                Entry::Occupied(mut occupied) => {
+                    match occupied.get_mut() {
+                        Node::Exec(exec_node) => {
+                            // apparently this is the easiest way to turn a `char` into a `&str`
+                            // (without allocating a single-char `String` first`)
+                            let mut buf = [0; std::mem::size_of::<char>()];
 
-                    exec_node.insert(char.encode_utf8(&mut buf));
-                }
+                            exec_node.insert(char.encode_utf8(&mut buf));
+                        }
 
-                None => {
-                    if char == 'E' {
-                        nodes
-                            .try_insert(model.highlighted_node, Node::empty_exec())
-                            .unwrap();
+                        Node::Input(_) => {
+                            // TODO: handle direct node input?
+                        }
                     }
                 }
+
+                Entry::Vacant(vacant) => match char {
+                    'E' => {
+                        vacant.insert(Node::empty_exec());
+                    }
+                    'I' => {
+                        vacant.insert(Node::empty_input());
+                    }
+                    _ => {}
+                },
             }
 
             Update::no_output(Model {
@@ -1920,6 +1974,16 @@ fn stop_node_execution(
         Node::Exec(exec_node) => {
             if exec_node.exec.is_some() {
                 exec_node.exec = None;
+                new_nodes.insert(node_loc, node);
+                Ok(new_nodes)
+            } else {
+                Err(new_nodes)
+            }
+        }
+
+        Node::Input(input_node) => {
+            if input_node.index.is_some() {
+                input_node.index = None;
                 new_nodes.insert(node_loc, node);
                 Ok(new_nodes)
             } else {
@@ -2072,12 +2136,18 @@ fn step_node_execution(
                     }
                 }
             }
+        }
 
-            new_nodes.try_insert(node_loc, node).unwrap();
-
-            Ok(new_nodes)
+        Node::Input(input_node) => {
+            if input_node.index.is_none() {
+                input_node.index = Some(0);
+            }
         }
     }
+
+    new_nodes.try_insert(node_loc, node).unwrap();
+
+    Ok(new_nodes)
 }
 
 fn get_src_value(
@@ -2112,6 +2182,20 @@ fn get_src_value(
                         new_nodes.insert(neighbor_loc, Node::Exec(neighbor));
 
                         Some(value)
+                    } else {
+                        None
+                    }
+                }
+
+                Node::Input(input_node) => {
+                    let mut neighbor = input_node.clone();
+                    let neighbor_index = neighbor.index.as_mut()?;
+
+                    let next = *neighbor_index + 1;
+
+                    if let Some(num) = neighbor.data.get(next) {
+                        *neighbor_index = next;
+                        Some(*num)
                     } else {
                         None
                     }
@@ -2520,6 +2604,7 @@ fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> String 
 
         let value: &str = match node {
             Node::Exec(exec_node) => &exec_node.text,
+            Node::Input(_) => todo!("decide what to do with this"),
         };
 
         toml += &format!("\"{}\" = \"\"\"\n{}\n\"\"\"\n\n", key, value);
