@@ -1,9 +1,5 @@
 "-1, 0" = '''
-MOV 10 RIGHT
-MOV 1 RIGHT
-MOV 100 RIGHT
-MOV 0 RIGHT
-JRO 0
+MOV UP RIGHT
 '''
 
 "0, 0" = """
@@ -27,3 +23,5 @@ MOV LEFT ACC
 JMP RST
 SK1:ADD LEFT
 """
+
+"-1, -1" = [1, 3, 2, 5, 0]

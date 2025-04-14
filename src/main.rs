@@ -374,6 +374,10 @@ impl InputNode {
     fn with_data(data: ArrayVec<Num, INPUT_NODE_CAP>) -> InputNode {
         InputNode { data, index: None }
     }
+
+    fn current(&self) -> Option<Num> {
+        self.data.get(self.index?).copied()
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -631,13 +635,19 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
             Node::Input(input_node) => {
                 render_node_border(d, *node_loc, line_color);
 
-                let text = if input_node.index.is_some() {
-                    "INPUT NODE (ACTIVE)"
+                let str;
+                let label = if let Some(i) = input_node.index {
+                    str = i.to_string();
+                    &str
                 } else {
-                    "INPUT NODE (INACTIVE)"
+                    "INPUT NODE"
                 };
 
-                render_centered_text(d, text, node_loc.center(), font, Color::WHITE);
+                render_centered_text(d, label, node_loc.center(), font, Color::WHITE);
+
+                if let Some(num) = input_node.current() {
+                    render_io_arrow(d, node_loc, Dir::Down, &num.to_string(), font);
+                }
             }
         }
     }
@@ -875,19 +885,25 @@ fn render_error_msg(
 }
 
 fn neighbor_sending_io(nodes: &Nodes, node_loc: &NodeCoord, io_dir: Dir) -> bool {
-    let Some(Node::Exec(neighbor)) = nodes.get(&node_loc.neighbor(io_dir)) else {
+    let Some(neighbor) = nodes.get(&node_loc.neighbor(io_dir)) else {
         return false;
     };
 
-    let Some(neighbor_exec) = &neighbor.exec else {
-        return false;
-    };
+    match neighbor {
+        Node::Exec(exec_node) => {
+            let Some(neighbor_exec) = &exec_node.exec else {
+                return false;
+            };
 
-    let NodeIO::Outbound(neighbor_io_dir, _) = neighbor_exec.io else {
-        return false;
-    };
+            let NodeIO::Outbound(neighbor_io_dir, _) = neighbor_exec.io else {
+                return false;
+            };
 
-    neighbor_io_dir == io_dir.inverse()
+            neighbor_io_dir == io_dir.inverse()
+        }
+
+        Node::Input(input_node) => io_dir == Dir::Up && input_node.current().is_some(),
+    }
 }
 
 fn render_node_gizmos(
@@ -2195,19 +2211,23 @@ fn get_src_value(
                     }
                 }
 
-                Node::Input(input_node) => {
+                Node::Input(input_node) if target_dir == Dir::Up => {
                     let mut neighbor = input_node.clone();
+                    let current = neighbor.current();
                     let neighbor_index = neighbor.index.as_mut()?;
 
-                    let next = *neighbor_index + 1;
+                    if let Some(num) = current {
+                        *neighbor_index += 1;
 
-                    if let Some(num) = neighbor.data.get(next) {
-                        *neighbor_index = next;
-                        Some(*num)
+                        new_nodes.insert(neighbor_loc, Node::Input(neighbor));
+
+                        Some(num)
                     } else {
                         None
                     }
                 }
+
+                Node::Input(_) => None,
             }
         }
         Src::Nil => Some(0),
