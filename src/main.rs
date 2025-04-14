@@ -370,6 +370,12 @@ struct InputNode {
     index: Option<usize>,
 }
 
+impl InputNode {
+    fn with_data(data: ArrayVec<Num, INPUT_NODE_CAP>) -> InputNode {
+        InputNode { data, index: None }
+    }
+}
+
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 struct NodeCoord {
     x: isize,
@@ -1761,6 +1767,8 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                                 ImportErr::InvalidRhs => "# INVALID RHS",
                                 ImportErr::DuplicateCoord => "# DUPLICATE COORD",
                                 ImportErr::InvalidHighlightRhs => "# INVALID LOC",
+                                ImportErr::IntOutOfRange => "# INT OVERFLOW",
+                                ImportErr::NotAnInt => "# NOT AN INT",
                             };
 
                             let node =
@@ -2525,6 +2533,8 @@ enum ImportErr {
     InvalidRhs,
     DuplicateCoord,
     InvalidHighlightRhs,
+    IntOutOfRange,
+    NotAnInt,
 }
 
 use toml::{Table, Value};
@@ -2566,6 +2576,22 @@ fn parse_node(key: &str, value: Value) -> Result<(NodeCoord, Node), ImportErr> {
         Value::String(text) => {
             Node::exec_with_text(text.trim_end()).ok_or(ImportErr::NodeTextDoesntFit)?
         }
+
+        Value::Array(arr) => {
+            let data = arr
+                .into_iter()
+                .map(|value| {
+                    if let Value::Integer(int) = value {
+                        int.try_into().map_err(|_| ImportErr::IntOutOfRange)
+                    } else {
+                        Err(ImportErr::NotAnInt)
+                    }
+                })
+                .try_collect()?;
+
+            Node::Input(InputNode::with_data(data))
+        }
+
         _ => return Err(ImportErr::InvalidRhs),
     };
 
@@ -2602,12 +2628,20 @@ fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> String 
     for (node_loc, node) in nodes {
         let key = fmt_coord(node_loc);
 
-        let value: &str = match node {
-            Node::Exec(exec_node) => &exec_node.text,
-            Node::Input(_) => todo!("decide what to do with this"),
-        };
+        toml += &match node {
+            Node::Exec(exec_node) => {
+                format!("\"{}\" = \"\"\"\n{}\n\"\"\"\n\n", key, &exec_node.text)
+            }
+            Node::Input(input_node) => {
+                let mut fmt = format!("\"{}\" = [ ", key);
 
-        toml += &format!("\"{}\" = \"\"\"\n{}\n\"\"\"\n\n", key, value);
+                for num in &input_node.data {
+                    fmt += &format!("{num}, ");
+                }
+
+                fmt + "]\n\n"
+            }
+        };
     }
 
     if let Some(highlighted) = highlighted_node {
