@@ -1,8 +1,6 @@
-#![feature(array_repeat)]
 #![feature(let_chains)]
 #![feature(map_try_insert)]
 #![feature(iterator_try_collect)]
-#![feature(map_many_mut)]
 #![feature(iter_intersperse)]
 
 use std::{
