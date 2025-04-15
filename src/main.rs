@@ -3,6 +3,16 @@
 #![feature(iterator_try_collect)]
 #![feature(iter_intersperse)]
 
+mod consts;
+mod dir;
+mod exec_node;
+mod input_node;
+mod num;
+
+use crate::dir::Dir;
+use crate::exec_node::{ExecNode, ExecNodeState, ParseErr, ParseProblem};
+use crate::input_node::InputNode;
+
 use std::{
     collections::{HashMap, hash_map::Entry},
     f32,
@@ -11,28 +21,6 @@ use std::{
 
 use arrayvec::{ArrayString, ArrayVec};
 use raylib::prelude::*;
-
-const NODE_LINE_LENGTH: usize = 18;
-const NODE_LINES: usize = 15;
-const NODE_TEXT_BUFFER_SIZE: usize = (NODE_LINE_LENGTH + 1) * NODE_LINES;
-const NODE_FONT_SIZE: f32 = 20.;
-const NODE_LINE_HEIGHT: f32 = 20.;
-const NODE_CHAR_WIDTH: f32 = (9. / 20.) * NODE_FONT_SIZE + NODE_FONT_SPACING;
-const NODE_FONT_SPACING: f32 = 3.;
-const NODE_INSIDE_SIDE_LENGTH: f32 = NODE_LINES as f32 * NODE_FONT_SIZE;
-const NODE_INSIDE_PADDING: f32 = 10.;
-const NODE_OUTSIDE_PADDING: f32 = 100.;
-const NODE_OUTSIDE_SIDE_LENGTH: f32 = NODE_INSIDE_SIDE_LENGTH + 2. * NODE_INSIDE_PADDING;
-const GHOST_NODE_DASHES: usize = 8;
-const LINE_THICKNESS: f32 = 2.0;
-const GIZMO_HEIGHT: f32 = NODE_OUTSIDE_SIDE_LENGTH / 4.0;
-const GIZMO_WIDTH: f32 = NODE_OUTSIDE_SIDE_LENGTH - NODE_TEXT_BOX_OUTSIDE_WIDTH;
-const NODE_TEXT_BOX_INSIDE_WIDTH: f32 = (NODE_LINE_LENGTH as f32 + 0.5) * NODE_CHAR_WIDTH;
-const NODE_TEXT_BOX_OUTSIDE_WIDTH: f32 = NODE_TEXT_BOX_INSIDE_WIDTH + 2.0 * NODE_INSIDE_PADDING;
-const KEY_REPEAT_DELAY_S: f32 = 0.5;
-const KEY_REPEAT_INTERVAL_S: f32 = 1.0 / 30.0;
-
-const GHOST_COLOR: Color = Color::GRAY;
 
 type Nodes = HashMap<NodeCoord, Node>;
 
@@ -63,318 +51,58 @@ enum Ghosts {
     None,
 }
 
-type NodeText = ArrayString<NODE_TEXT_BUFFER_SIZE>;
+#[derive(Clone, Debug)]
+struct Node {
+    variant: NodeType,
+    outbox: NodeOutbox,
+}
 
 #[derive(Clone, Debug)]
-enum Node {
+enum NodeType {
     Exec(ExecNode),
     Input(InputNode),
-    // Stack,
+}
+
+#[derive(Clone, Debug)]
+enum NodeOutbox {
+    Empty,
+    Directional(Dir, Num),
+    Any(Num),
 }
 
 impl Node {
     fn empty_exec() -> Self {
-        Self::Exec(ExecNode::empty())
+        Node {
+            variant: NodeType::Exec(ExecNode::empty()),
+            outbox: NodeOutbox::Empty,
+        }
     }
 
     fn exec_with_text(text: &str) -> Option<Self> {
-        let text = ArrayString::from(text).ok()?;
-
-        if !validate(&text) {
-            return None;
-        }
-
-        let mut exec_node = ExecNode {
-            text,
-            cursor: 0,
-            select_cursor: 0,
-            error: None,
-            exec: None,
-        };
-
-        exec_node.update_error();
-
-        Some(Node::Exec(exec_node))
+        Some(Node {
+            variant: NodeType::Exec(ExecNode::with_text(text)?),
+            outbox: NodeOutbox::Empty,
+        })
     }
 
     fn exec_with_lines<'str>(lines: impl IntoIterator<Item = &'str str>) -> Option<Self> {
-        let text =
-            ArrayString::from(&lines.into_iter().intersperse("\n").collect::<String>()).ok()?;
+        let text: String = lines.into_iter().intersperse("\n").collect();
 
-        if !validate(&text) {
-            return None;
-        }
-
-        let mut exec_node = ExecNode {
-            text,
-            cursor: 0,
-            select_cursor: 0,
-            error: None,
-            exec: None,
-        };
-
-        exec_node.update_error();
-
-        Some(Node::Exec(exec_node))
+        Self::exec_with_text(&text)
     }
 
     fn empty_input() -> Self {
-        Self::Input(InputNode {
-            data: ArrayVec::new(),
-            index: None,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ExecNode {
-    text: NodeText,
-    cursor: usize,
-    select_cursor: usize,
-    error: Option<ParseErr>,
-    exec: Option<NodeExec>,
-}
-
-impl ExecNode {
-    fn empty() -> Self {
-        Self {
-            text: ArrayString::new(),
-            cursor: 0,
-            select_cursor: 0,
-            error: None,
-            exec: None,
+        Node {
+            variant: NodeType::Input(InputNode::empty()),
+            outbox: NodeOutbox::Empty,
         }
     }
 
-    fn is_in_edit_mode(&self) -> bool {
-        self.exec.is_none()
-    }
-
-    fn backspace(&mut self) {
-        if self.text_selected() {
-            self.insert("");
-        } else {
-            let Some(index) = self.cursor.checked_sub(1) else {
-                return;
-            };
-
-            self.text.remove(index);
-            self.cursor = index;
-            self.select_cursor = index;
-            self.update_error();
+    fn input_with_data(data: ArrayVec<Num, { input_node::INPUT_NODE_CAP }>) -> Self {
+        Node {
+            variant: NodeType::Input(InputNode::with_data(data)),
+            outbox: NodeOutbox::Empty,
         }
-    }
-
-    fn text_selected(&self) -> bool {
-        self.cursor != self.select_cursor
-    }
-
-    fn selection_range(&self) -> (usize, usize) {
-        if self.cursor > self.select_cursor {
-            (self.select_cursor, self.cursor)
-        } else {
-            (self.cursor, self.select_cursor)
-        }
-    }
-
-    /// if text is selected, this replaces it
-    fn insert(&mut self, txt: &str) {
-        let (select_start, select_end) = self.selection_range();
-
-        let mut new_text = ArrayString::new();
-
-        let push_results = [
-            new_text.try_push_str(&self.text[..select_start]),
-            new_text.try_push_str(txt),
-            new_text.try_push_str(&self.text[select_end..]),
-        ];
-
-        if push_results.iter().all(Result::is_ok) && validate(&new_text) {
-            self.text = new_text;
-            self.cursor = select_start + txt.len();
-            self.deselect();
-            self.update_error();
-        }
-    }
-
-    fn selection(&self) -> &str {
-        let (select_start, select_end) = self.selection_range();
-
-        &self.text[select_start..select_end]
-    }
-
-    fn enter(&mut self, select: bool) {
-        self.insert("\n");
-
-        if !select {
-            self.deselect();
-        }
-    }
-
-    fn right(&mut self, select: bool) {
-        self.cursor = usize::min(self.cursor + 1, self.text.len());
-
-        if !select {
-            self.deselect();
-        }
-    }
-
-    fn left(&mut self, select: bool) {
-        self.cursor = self.cursor.saturating_sub(1);
-
-        if !select {
-            self.deselect();
-        }
-    }
-
-    fn target(&self, target_line: usize, target_column: usize) -> usize {
-        let mut chars = self.text.chars();
-        let mut line = 0;
-        let mut column = 0;
-        let mut cursor = 0;
-
-        while line < target_line
-            && let Some(char) = chars.next()
-        {
-            if char == '\n' {
-                line += 1;
-            }
-            cursor += 1;
-        }
-
-        while column < target_column
-            && let Some(char) = chars.next()
-        {
-            if char == '\n' {
-                break;
-            } else {
-                cursor += 1;
-                column += 1;
-            }
-        }
-
-        cursor
-    }
-
-    fn up(&mut self, select: bool) {
-        let (line, target_column) = line_column(&self.text, self.cursor);
-
-        self.cursor = line
-            .checked_sub(1)
-            .map(|target_line| self.target(target_line, target_column))
-            .unwrap_or(0);
-
-        if !select {
-            self.deselect();
-        }
-    }
-
-    fn down(&mut self, select: bool) {
-        let (line, target_column) = line_column(&self.text, self.cursor);
-
-        let target_line = line + 1;
-
-        self.cursor = self.target(target_line, target_column);
-
-        if !select {
-            self.deselect();
-        }
-    }
-
-    fn home(&mut self, select: bool) {
-        let mut cursor = self.cursor;
-
-        for char in self.text.chars().rev().skip(self.text.len() - self.cursor) {
-            if char == '\n' {
-                break;
-            } else {
-                cursor -= 1;
-            }
-        }
-
-        self.cursor = cursor;
-
-        if !select {
-            self.deselect();
-        }
-    }
-
-    fn end(&mut self, select: bool) {
-        let mut cursor = self.cursor;
-
-        for char in self.text.chars().skip(self.cursor) {
-            if char == '\n' {
-                break;
-            } else {
-                cursor += 1;
-            }
-        }
-
-        self.cursor = cursor;
-
-        if !select {
-            self.deselect();
-        }
-    }
-
-    fn deselect(&mut self) {
-        self.select_cursor = self.cursor;
-    }
-
-    fn update_error(&mut self) {
-        self.error = if let Err(parse_err) = parse_node_text(&self.text) {
-            Some(parse_err)
-        } else {
-            None
-        }
-    }
-
-    fn select_all(&mut self) {
-        self.select_cursor = 0;
-        self.cursor = self.text.len();
-    }
-}
-
-fn validate(node_text: &NodeText) -> bool {
-    node_text
-        .split('\n')
-        .all(|line| line.len() <= NODE_LINE_LENGTH)
-        && node_text.split('\n').count() <= NODE_LINES
-}
-
-fn line_column(str: &str, index: usize) -> (usize, usize) {
-    assert!(index <= str.len());
-
-    let mut line = 0;
-    let mut column = 0;
-
-    for char in str.chars().take(index) {
-        if char == '\n' {
-            line += 1;
-            column = 0;
-        } else {
-            column += 1;
-        }
-    }
-
-    (line, column)
-}
-
-const INPUT_NODE_CAP: usize = 39;
-
-#[derive(Clone, Debug)]
-struct InputNode {
-    data: ArrayVec<Num, INPUT_NODE_CAP>,
-    index: Option<usize>,
-}
-
-impl InputNode {
-    fn with_data(data: ArrayVec<Num, INPUT_NODE_CAP>) -> InputNode {
-        InputNode { data, index: None }
-    }
-
-    fn current(&self) -> Option<Num> {
-        self.data.get(self.index?).copied()
     }
 }
 
@@ -394,13 +122,13 @@ impl NodeCoord {
             x: self.x as f32,
             y: self.y as f32,
         }
-        .scale_by(NODE_OUTSIDE_SIDE_LENGTH + NODE_OUTSIDE_PADDING)
+        .scale_by(consts::NODE_OUTSIDE_SIDE_LENGTH + consts::NODE_OUTSIDE_PADDING)
     }
 
     fn top_right_corner(&self) -> Vector2 {
         self.top_left_corner()
             + Vector2 {
-                x: NODE_OUTSIDE_SIDE_LENGTH,
+                x: consts::NODE_OUTSIDE_SIDE_LENGTH,
                 y: 0.,
             }
     }
@@ -409,47 +137,47 @@ impl NodeCoord {
         self.top_left_corner()
             + Vector2 {
                 x: 0.,
-                y: NODE_OUTSIDE_SIDE_LENGTH,
+                y: consts::NODE_OUTSIDE_SIDE_LENGTH,
             }
     }
 
     fn bottom_right_corner(&self) -> Vector2 {
         self.top_left_corner()
             + Vector2 {
-                x: NODE_OUTSIDE_SIDE_LENGTH,
-                y: NODE_OUTSIDE_SIDE_LENGTH,
+                x: consts::NODE_OUTSIDE_SIDE_LENGTH,
+                y: consts::NODE_OUTSIDE_SIDE_LENGTH,
             }
     }
 
     fn text_loc(&self) -> Vector2 {
-        self.top_left_corner() + Vector2::one().scale_by(NODE_INSIDE_PADDING)
+        self.top_left_corner() + Vector2::one().scale_by(consts::NODE_INSIDE_PADDING)
     }
 
     fn line_pos(&self, line_number: usize) -> Vector2 {
-        self.text_loc() + Vector2::new(0., line_number as f32 * NODE_LINE_HEIGHT)
+        self.text_loc() + Vector2::new(0., line_number as f32 * consts::NODE_LINE_HEIGHT)
     }
 
     fn char_pos(&self, line: usize, column: usize) -> Vector2 {
         self.text_loc()
             + Vector2::new(
-                column as f32 * NODE_CHAR_WIDTH,
-                line as f32 * NODE_LINE_HEIGHT,
+                column as f32 * consts::NODE_CHAR_WIDTH,
+                line as f32 * consts::NODE_LINE_HEIGHT,
             )
     }
 
     fn center(&self) -> Vector2 {
-        self.top_left_corner() + Vector2::one().scale_by(NODE_OUTSIDE_SIDE_LENGTH / 2.)
+        self.top_left_corner() + Vector2::one().scale_by(consts::NODE_OUTSIDE_SIDE_LENGTH / 2.)
     }
 
     fn io_indicator(&self, dir: Dir) -> Vector2 {
         self.center()
             + dir
                 .normalized()
-                .scale_by((NODE_OUTSIDE_SIDE_LENGTH + NODE_OUTSIDE_PADDING) / 2.0)
+                .scale_by((consts::NODE_OUTSIDE_SIDE_LENGTH + consts::NODE_OUTSIDE_PADDING) / 2.0)
             + dir
                 .rotate_right()
                 .normalized()
-                .scale_by(NODE_OUTSIDE_SIDE_LENGTH / 4.0)
+                .scale_by(consts::NODE_OUTSIDE_SIDE_LENGTH / 4.0)
     }
 
     fn neighbor(self, direction: Dir) -> Self {
@@ -468,7 +196,7 @@ fn main() {
     let (mut rl, thread) = raylib::init().resizable().title("TIS-NET").build();
 
     rl.set_target_fps(60);
-    rl.set_text_line_spacing(NODE_LINE_HEIGHT as _);
+    rl.set_text_line_spacing(consts::NODE_LINE_HEIGHT as _);
     rl.set_exit_key(None);
 
     let font = rl
@@ -545,14 +273,14 @@ fn render(rl: &mut RaylibHandle, thread: &RaylibThread, state: &State, font: &Fo
 
     let highlighted = model.nodes.get(&model.highlighted_node);
 
-    match highlighted {
-        Some(Node::Exec(exec_node)) => {
+    match highlighted.map(|Node { variant, .. }| variant) {
+        Some(NodeType::Exec(exec_node)) => {
             if exec_node.is_in_edit_mode() {
                 render_cursor(d, model.highlighted_node, exec_node);
             }
         }
 
-        Some(Node::Input(_)) => {}
+        Some(NodeType::Input(_)) => {}
 
         None => {
             render_dashed_node_border(d, model.highlighted_node, Color::GRAY);
@@ -568,9 +296,9 @@ fn render_ghosts(d: &mut impl RaylibDraw, model: &Model) {
             for dir in Dir::ALL {
                 let neighbor_loc = model.highlighted_node.neighbor(dir);
                 if !model.nodes.contains_key(&neighbor_loc) {
-                    render_dashed_node_border(d, neighbor_loc, GHOST_COLOR);
+                    render_dashed_node_border(d, neighbor_loc, consts::GHOST_COLOR);
 
-                    render_arrow(d, neighbor_loc.center(), dir, GHOST_COLOR);
+                    render_arrow(d, neighbor_loc.center(), dir, consts::GHOST_COLOR);
                 }
             }
         }
@@ -579,9 +307,9 @@ fn render_ghosts(d: &mut impl RaylibDraw, model: &Model) {
             for dir in Dir::ALL {
                 let neighbor_loc = model.highlighted_node.neighbor(dir);
                 if !model.nodes.contains_key(&neighbor_loc) {
-                    render_dashed_node_border(d, neighbor_loc, GHOST_COLOR);
+                    render_dashed_node_border(d, neighbor_loc, consts::GHOST_COLOR);
 
-                    render_double_arrow(d, neighbor_loc.center(), dir, GHOST_COLOR);
+                    render_double_arrow(d, neighbor_loc.center(), dir, consts::GHOST_COLOR);
                 }
             }
         }
@@ -598,39 +326,43 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
             Color::GRAY
         };
 
-        match node {
-            Node::Exec(exec_node) => {
+        match &node.variant {
+            NodeType::Exec(exec_node) => {
                 render_node_border(d, *node_loc, line_color);
 
-                render_node_gizmos(d, *node_loc, &exec_node.exec, font, line_color, Color::GRAY);
+                let state = exec_node.state();
 
-                render_node_text(d, exec_node, node_loc, font);
+                todo!()
+
+                // render_node_gizmos(d, *node_loc, &exec_node.exec, font, line_color, Color::GRAY);
+
+                // render_node_text(d, exec_node, node_loc, font);
 
                 // the below two things should not be true at the same time if I did my homework
                 // (because a node with an error should not be able to begin executing)
                 // but this isn't reflected in the type system. If it were to happen though, it means there's a bug
-                debug_assert!(!(exec_node.error.is_some() && exec_node.exec.is_some()));
+                // debug_assert!(!(exec_node.error.is_some() && exec_node.exec.is_some()));
 
-                if let Some(error) = &exec_node.error
-                    && show_error(node_loc, exec_node, &model.highlighted_node, error.line)
-                {
-                    render_error_squiggle(d, *node_loc, &exec_node.text, error.line);
-                }
+                // if let Some(error) = &exec_node.error
+                //     && show_error(node_loc, exec_node, &model.highlighted_node, error.line)
+                // {
+                //     render_error_squiggle(d, *node_loc, &exec_node.text, error.line);
+                // }
 
-                if let Some(exec) = &exec_node.exec
-                    && !exec.code.is_empty()
-                {
-                    if let NodeIO::Outbound(dir, value) = exec.io {
-                        render_io_arrow(d, node_loc, dir, &value.to_string(), font);
-                    } else if let NodeIO::Inbound(io_dir) = exec.io
-                        && !neighbor_sending_io(&model.nodes, node_loc, io_dir)
-                    {
-                        render_io_arrow(d, &node_loc.neighbor(io_dir), io_dir.inverse(), "?", font);
-                    }
-                }
+                // if let Some(exec) = &exec_node.exec
+                //     && !exec.code.is_empty()
+                // {
+                //     if let NodeIO::Outbound(dir, value) = exec.io {
+                //         render_io_arrow(d, node_loc, dir, &value.to_string(), font);
+                //     } else if let NodeIO::Inbound(io_dir) = exec.io
+                //         && !neighbor_sending_io(&model.nodes, node_loc, io_dir)
+                //     {
+                //         render_io_arrow(d, &node_loc.neighbor(io_dir), io_dir.inverse(), "?", font);
+                //     }
+                // }
             }
 
-            Node::Input(input_node) => {
+            NodeType::Input(input_node) => {
                 render_node_border(d, *node_loc, line_color);
 
                 let str;
@@ -652,11 +384,8 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
 
     // error boxes are rendered in a second pass because they need to be rendered over top of everything else
     for (node_loc, node) in model.nodes.iter() {
-        if let Node::Exec(
-            exec_node @ ExecNode {
-                error: Some(error), ..
-            },
-        ) = &node
+        if let NodeType::Exec(exec_node) = &node.variant
+            && let ExecNodeState::Errored(error) = exec_node.state()
             && show_error(node_loc, exec_node, &model.highlighted_node, error.line)
         {
             render_error_msg(d, node_loc, &error.problem, font);
@@ -665,159 +394,160 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
 }
 
 fn render_node_text(d: &mut impl RaylibDraw, node: &ExecNode, node_loc: &NodeCoord, font: &Font) {
-    let highlight = if let Some(ref exec) = node.exec
-        && let Some(instr) = exec.code.get(exec.ip as usize)
-    {
-        Highlight::Executing {
-            line: instr.src_line as usize,
-            blocked: !matches!(exec.io, NodeIO::None),
-        }
-    } else if node.text_selected() {
-        let (start, end) = node.selection_range();
+    todo!()
+    // let highlight = if let Some(ref exec) = node.exec
+    //     && let Some(instr) = exec.code.get(exec.ip as usize)
+    // {
+    //     Highlight::Executing {
+    //         line: instr.src_line as usize,
+    //         blocked: !matches!(exec.io, NodeIO::None),
+    //     }
+    // } else if node.text_selected() {
+    //     let (start, end) = node.selection_range();
 
-        let (start_line, start_col) = line_column(&node.text, start);
-        let (end_line, end_col) = line_column(&node.text, end);
+    //     let (start_line, start_col) = line_column(&node.text, start);
+    //     let (end_line, end_col) = line_column(&node.text, end);
 
-        Highlight::Selected {
-            start_line,
-            start_col,
-            end_line,
-            end_col,
-        }
-    } else {
-        Highlight::None
-    };
+    //     Highlight::Selected {
+    //         start_line,
+    //         start_col,
+    //         end_line,
+    //         end_col,
+    //     }
+    // } else {
+    //     Highlight::None
+    // };
 
-    for (line_no, line_text) in node.text.split('\n').enumerate() {
-        let line_loc = node_loc.line_pos(line_no);
+    // for (line_no, line_text) in node.text.split('\n').enumerate() {
+    //     let line_loc = node_loc.line_pos(line_no);
 
-        match highlight {
-            Highlight::Executing { line, blocked } if line == line_no => {
-                let highlight_color = if blocked { Color::GRAY } else { Color::WHITE };
+    //     match highlight {
+    //         Highlight::Executing { line, blocked } if line == line_no => {
+    //             let highlight_color = if blocked { Color::GRAY } else { Color::WHITE };
 
-                let highlight_pos = line_loc
-                    - Vector2 {
-                        x: NODE_INSIDE_PADDING * 0.25,
-                        y: 0.0,
-                    };
+    //             let highlight_pos = line_loc
+    //                 - Vector2 {
+    //                     x: consts::NODE_INSIDE_PADDING * 0.25,
+    //                     y: 0.0,
+    //                 };
 
-                const HIGHLIGHT_SIZE: Vector2 = Vector2 {
-                    x: NODE_TEXT_BOX_INSIDE_WIDTH + NODE_INSIDE_PADDING * 0.5,
-                    y: NODE_LINE_HEIGHT,
-                };
+    //             const HIGHLIGHT_SIZE: Vector2 = Vector2 {
+    //                 x: NODE_TEXT_BOX_INSIDE_WIDTH + consts::NODE_INSIDE_PADDING * 0.5,
+    //                 y: consts::NODE_LINE_HEIGHT,
+    //             };
 
-                d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, highlight_color);
+    //             d.draw_rectangle_v(highlight_pos, HIGHLIGHT_SIZE, highlight_color);
 
-                d.draw_text_ex(
-                    font,
-                    line_text,
-                    line_loc,
-                    NODE_FONT_SIZE,
-                    NODE_FONT_SPACING,
-                    Color::BLACK,
-                );
-            }
+    //             d.draw_text_ex(
+    //                 font,
+    //                 line_text,
+    //                 line_loc,
+    //                 consts::NODE_FONT_SIZE,
+    //                 consts::NODE_FONT_SPACING,
+    //                 Color::BLACK,
+    //             );
+    //         }
 
-            Highlight::Selected {
-                start_line,
-                start_col,
-                end_line,
-                end_col,
-            } if start_line <= line_no && line_no <= end_line => {
-                if let Some(comment_start) = line_text.find('#') {
-                    let char_offset = Vector2::new(NODE_CHAR_WIDTH, 0.0);
-                    let comment_offset = char_offset.scale_by(comment_start as f32);
+    //         Highlight::Selected {
+    //             start_line,
+    //             start_col,
+    //             end_line,
+    //             end_col,
+    //         } if start_line <= line_no && line_no <= end_line => {
+    //             if let Some(comment_start) = line_text.find('#') {
+    //                 let char_offset = Vector2::new(consts::NODE_CHAR_WIDTH, 0.0);
+    //                 let comment_offset = char_offset.scale_by(comment_start as f32);
 
-                    d.draw_text_ex(
-                        font,
-                        &line_text[..comment_start],
-                        line_loc,
-                        NODE_FONT_SIZE,
-                        NODE_FONT_SPACING,
-                        Color::WHITE,
-                    );
-                    d.draw_text_ex(
-                        font,
-                        &line_text[comment_start..],
-                        line_loc + comment_offset,
-                        NODE_FONT_SIZE,
-                        NODE_FONT_SPACING,
-                        Color::GRAY,
-                    );
-                } else {
-                    d.draw_text_ex(
-                        font,
-                        line_text,
-                        line_loc,
-                        NODE_FONT_SIZE,
-                        NODE_FONT_SPACING,
-                        Color::WHITE,
-                    );
-                }
+    //                 d.draw_text_ex(
+    //                     font,
+    //                     &line_text[..comment_start],
+    //                     line_loc,
+    //                     consts::NODE_FONT_SIZE,
+    //                     consts::NODE_FONT_SPACING,
+    //                     Color::WHITE,
+    //                 );
+    //                 d.draw_text_ex(
+    //                     font,
+    //                     &line_text[comment_start..],
+    //                     line_loc + comment_offset,
+    //                     consts::NODE_FONT_SIZE,
+    //                     consts::NODE_FONT_SPACING,
+    //                     Color::GRAY,
+    //                 );
+    //             } else {
+    //                 d.draw_text_ex(
+    //                     font,
+    //                     line_text,
+    //                     line_loc,
+    //                     consts::NODE_FONT_SIZE,
+    //                     consts::NODE_FONT_SPACING,
+    //                     Color::WHITE,
+    //                 );
+    //             }
 
-                let selection_start = if start_line == line_no { start_col } else { 0 };
+    //             let selection_start = if start_line == line_no { start_col } else { 0 };
 
-                let selection_end = if end_line == line_no {
-                    end_col
-                } else {
-                    line_text.len() + 1
-                };
+    //             let selection_end = if end_line == line_no {
+    //                 end_col
+    //             } else {
+    //                 line_text.len() + 1
+    //             };
 
-                let selection_len = selection_end - selection_start;
+    //             let selection_len = selection_end - selection_start;
 
-                let select_highlight_pos = node_loc.char_pos(line_no, selection_start);
+    //             let select_highlight_pos = node_loc.char_pos(line_no, selection_start);
 
-                let selection_box_size = Vector2 {
-                    x: selection_len as f32 * NODE_CHAR_WIDTH,
-                    y: NODE_LINE_HEIGHT,
-                };
+    //             let selection_box_size = Vector2 {
+    //                 x: selection_len as f32 * consts::NODE_CHAR_WIDTH,
+    //                 y: consts::NODE_LINE_HEIGHT,
+    //             };
 
-                d.draw_rectangle_v(select_highlight_pos, selection_box_size, Color::GRAY);
+    //             d.draw_rectangle_v(select_highlight_pos, selection_box_size, Color::GRAY);
 
-                d.draw_text_ex(
-                    font,
-                    line_text,
-                    line_loc,
-                    NODE_FONT_SIZE,
-                    NODE_FONT_SPACING,
-                    Color::WHITE,
-                );
-            }
+    //             d.draw_text_ex(
+    //                 font,
+    //                 line_text,
+    //                 line_loc,
+    //                 consts::NODE_FONT_SIZE,
+    //                 consts::NODE_FONT_SPACING,
+    //                 Color::WHITE,
+    //             );
+    //         }
 
-            Highlight::None | Highlight::Executing { .. } | Highlight::Selected { .. } => {
-                if let Some(comment_start) = line_text.find('#') {
-                    let char_offset = Vector2::new(NODE_CHAR_WIDTH, 0.0);
-                    let comment_offset = char_offset.scale_by(comment_start as f32);
+    //         Highlight::None | Highlight::Executing { .. } | Highlight::Selected { .. } => {
+    //             if let Some(comment_start) = line_text.find('#') {
+    //                 let char_offset = Vector2::new(consts::NODE_CHAR_WIDTH, 0.0);
+    //                 let comment_offset = char_offset.scale_by(comment_start as f32);
 
-                    d.draw_text_ex(
-                        font,
-                        &line_text[..comment_start],
-                        line_loc,
-                        NODE_FONT_SIZE,
-                        NODE_FONT_SPACING,
-                        Color::WHITE,
-                    );
-                    d.draw_text_ex(
-                        font,
-                        &line_text[comment_start..],
-                        line_loc + comment_offset,
-                        NODE_FONT_SIZE,
-                        NODE_FONT_SPACING,
-                        Color::GRAY,
-                    );
-                } else {
-                    d.draw_text_ex(
-                        font,
-                        line_text,
-                        line_loc,
-                        NODE_FONT_SIZE,
-                        NODE_FONT_SPACING,
-                        Color::WHITE,
-                    );
-                }
-            }
-        }
-    }
+    //                 d.draw_text_ex(
+    //                     font,
+    //                     &line_text[..comment_start],
+    //                     line_loc,
+    //                     consts::NODE_FONT_SIZE,
+    //                     consts::NODE_FONT_SPACING,
+    //                     Color::WHITE,
+    //                 );
+    //                 d.draw_text_ex(
+    //                     font,
+    //                     &line_text[comment_start..],
+    //                     line_loc + comment_offset,
+    //                     consts::NODE_FONT_SIZE,
+    //                     consts::NODE_FONT_SPACING,
+    //                     Color::GRAY,
+    //                 );
+    //             } else {
+    //                 d.draw_text_ex(
+    //                     font,
+    //                     line_text,
+    //                     line_loc,
+    //                     consts::NODE_FONT_SIZE,
+    //                     consts::NODE_FONT_SPACING,
+    //                     Color::WHITE,
+    //                 );
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -841,16 +571,7 @@ fn show_error(
     highlighted_node: &NodeCoord,
     error_line: u8,
 ) -> bool {
-    let (select_start, select_end) = node.selection_range();
-    let select_start_line = line_column(&node.text, select_start).0;
-    let select_end_line = line_column(&node.text, select_end).0;
-
-    let error_line = error_line as usize;
-
-    let node_is_highlighted = node_loc == highlighted_node;
-    let cursor_at_error_line = select_start_line <= error_line && error_line <= select_end_line;
-
-    !node_is_highlighted || !cursor_at_error_line
+    node_loc != highlighted_node || !node.cursor_at_error_line(error_line)
 }
 
 fn render_error_msg(
@@ -859,25 +580,30 @@ fn render_error_msg(
     problem: &ParseProblem,
     font: &Font,
 ) {
-    const BOX_HEIGHT: f32 = NODE_LINE_HEIGHT + 2.0 * NODE_INSIDE_PADDING;
+    const BOX_HEIGHT: f32 = consts::NODE_LINE_HEIGHT + 2.0 * consts::NODE_INSIDE_PADDING;
 
-    const BOX_NODE_PADDING: f32 = 0.25 * (NODE_OUTSIDE_PADDING - BOX_HEIGHT);
+    const BOX_NODE_PADDING: f32 = 0.25 * (consts::NODE_OUTSIDE_PADDING - BOX_HEIGHT);
 
     let bottom_left = node_loc.top_left_corner() - Vector2::new(0.0, BOX_NODE_PADDING);
 
     let top_left = bottom_left - Vector2::new(0.0, BOX_HEIGHT);
 
-    let top_right = top_left + Vector2::new(NODE_OUTSIDE_SIDE_LENGTH, 0.0);
-    let bottom_right = bottom_left + Vector2::new(NODE_OUTSIDE_SIDE_LENGTH, 0.0);
+    let top_right = top_left + Vector2::new(consts::NODE_OUTSIDE_SIDE_LENGTH, 0.0);
+    let bottom_right = bottom_left + Vector2::new(consts::NODE_OUTSIDE_SIDE_LENGTH, 0.0);
 
-    let center = top_left + Vector2::new(0.5 * NODE_OUTSIDE_SIDE_LENGTH, 0.5 * BOX_HEIGHT);
+    let center = top_left + Vector2::new(0.5 * consts::NODE_OUTSIDE_SIDE_LENGTH, 0.5 * BOX_HEIGHT);
 
     d.draw_rectangle_v(top_left, bottom_right - top_left, Color::BLACK);
 
-    d.draw_line_ex(top_left, top_right, LINE_THICKNESS, Color::RED);
-    d.draw_line_ex(top_left, bottom_left, LINE_THICKNESS, Color::RED);
-    d.draw_line_ex(bottom_left, bottom_right, LINE_THICKNESS, Color::RED);
-    d.draw_line_ex(top_right, bottom_right, LINE_THICKNESS, Color::RED);
+    d.draw_line_ex(top_left, top_right, consts::LINE_THICKNESS, Color::RED);
+    d.draw_line_ex(top_left, bottom_left, consts::LINE_THICKNESS, Color::RED);
+    d.draw_line_ex(
+        bottom_left,
+        bottom_right,
+        consts::LINE_THICKNESS,
+        Color::RED,
+    );
+    d.draw_line_ex(top_right, bottom_right, consts::LINE_THICKNESS, Color::RED);
 
     render_centered_text(d, problem.to_str(), center, font, Color::RED);
 }
@@ -887,125 +613,130 @@ fn neighbor_sending_io(nodes: &Nodes, node_loc: &NodeCoord, io_dir: Dir) -> bool
         return false;
     };
 
-    match neighbor {
-        Node::Exec(exec_node) => {
-            let Some(neighbor_exec) = &exec_node.exec else {
-                return false;
-            };
-
-            let NodeIO::Outbound(neighbor_io_dir, _) = neighbor_exec.io else {
-                return false;
-            };
-
-            neighbor_io_dir == io_dir.inverse()
-        }
-
-        Node::Input(input_node) => io_dir == Dir::Up && input_node.current().is_some(),
+    match neighbor.outbox {
+        NodeOutbox::Empty => false,
+        NodeOutbox::Directional(dir, _) => dir == io_dir.inverse(),
+        NodeOutbox::Any(_) => true,
     }
 }
 
 fn render_node_gizmos(
     d: &mut impl RaylibDraw,
     node_loc: NodeCoord,
-    exec: &Option<NodeExec>,
+    exec: &ExecNodeState,
     font: &Font,
     primary: Color,
     secondary: Color,
 ) {
-    let (acc_string, bak_string);
+    todo!()
 
-    let (acc, bak, mode) = if let Some(exec) = exec {
-        acc_string = exec.acc.to_string();
+    // let (acc_string, bak_string);
 
-        bak_string = if exec.bak < -99 {
-            exec.bak.to_string()
-        } else {
-            format!("({})", exec.bak)
-        };
+    // let (acc, bak, mode) = if let Some(exec) = exec {
+    //     acc_string = exec.acc.to_string();
 
-        let mode_str = match exec.io {
-            NodeIO::None => "EXEC",
-            NodeIO::Inbound(_) => "READ",
-            NodeIO::Outbound(_, _) => "WRTE",
-        };
+    //     bak_string = if exec.bak < -99 {
+    //         exec.bak.to_string()
+    //     } else {
+    //         format!("({})", exec.bak)
+    //     };
 
-        (acc_string.as_str(), bak_string.as_str(), mode_str)
-    } else {
-        ("0", "(0)", "EDIT")
-    };
+    //     let mode_str = match exec.io {
+    //         NodeIO::None => "EXEC",
+    //         NodeIO::Inbound(_) => "READ",
+    //         NodeIO::Outbound(_, _) => "WRTE",
+    //     };
 
-    let placeholder_gizmos = [("ACC", acc), ("BAK", bak), ("LAST", "N/A"), ("MODE", mode)];
+    //     (acc_string.as_str(), bak_string.as_str(), mode_str)
+    // } else {
+    //     ("0", "(0)", "EDIT")
+    // };
 
-    for (i, (top, bottom)) in placeholder_gizmos.into_iter().enumerate() {
-        let gizmos_top_left =
-            node_loc.top_right_corner() - Vector2::new(GIZMO_WIDTH, i as f32 * -GIZMO_HEIGHT);
+    // let placeholder_gizmos = [("ACC", acc), ("BAK", bak), ("LAST", "N/A"), ("MODE", mode)];
 
-        let left_right = Vector2::new(GIZMO_WIDTH, 0.0);
-        let top_down = Vector2::new(0.0, GIZMO_HEIGHT);
+    // for (i, (top, bottom)) in placeholder_gizmos.into_iter().enumerate() {
+    //     let gizmos_top_left = node_loc.top_right_corner()
+    //         - Vector2::new(consts::GIZMO_WIDTH, i as f32 * -consts::GIZMO_HEIGHT);
 
-        // draws a rectangle out of individual lines
-        // doing this makes the lines centered, rather than aligned to the outside
-        d.draw_line_ex(
-            gizmos_top_left,
-            gizmos_top_left + left_right,
-            LINE_THICKNESS,
-            primary,
-        );
-        d.draw_line_ex(
-            gizmos_top_left,
-            gizmos_top_left + top_down,
-            LINE_THICKNESS,
-            primary,
-        );
-        d.draw_line_ex(
-            gizmos_top_left + left_right,
-            gizmos_top_left + left_right + top_down,
-            LINE_THICKNESS,
-            primary,
-        );
-        d.draw_line_ex(
-            gizmos_top_left + top_down,
-            gizmos_top_left + top_down + left_right,
-            LINE_THICKNESS,
-            primary,
-        );
+    //     let left_right = Vector2::new(consts::GIZMO_WIDTH, 0.0);
+    //     let top_down = Vector2::new(0.0, consts::GIZMO_HEIGHT);
 
-        let text_center = gizmos_top_left + Vector2::new(GIZMO_WIDTH / 2., GIZMO_HEIGHT / 2.);
-        let text_offset = Vector2::new(0.0, NODE_LINE_HEIGHT / 2.0);
-        let top_text = text_center - text_offset;
-        let bottom_text = text_center + text_offset;
+    //     // draws a rectangle out of individual lines
+    //     // doing this makes the lines centered, rather than aligned to the outside
+    //     d.draw_line_ex(
+    //         gizmos_top_left,
+    //         gizmos_top_left + left_right,
+    //         consts::LINE_THICKNESS,
+    //         primary,
+    //     );
+    //     d.draw_line_ex(
+    //         gizmos_top_left,
+    //         gizmos_top_left + top_down,
+    //         consts::LINE_THICKNESS,
+    //         primary,
+    //     );
+    //     d.draw_line_ex(
+    //         gizmos_top_left + left_right,
+    //         gizmos_top_left + left_right + top_down,
+    //         consts::LINE_THICKNESS,
+    //         primary,
+    //     );
+    //     d.draw_line_ex(
+    //         gizmos_top_left + top_down,
+    //         gizmos_top_left + top_down + left_right,
+    //         consts::LINE_THICKNESS,
+    //         primary,
+    //     );
 
-        render_centered_text(d, top, top_text, font, secondary);
-        render_centered_text(d, bottom, bottom_text, font, Color::WHITE);
-    }
+    //     let text_center =
+    //         gizmos_top_left + Vector2::new(consts::GIZMO_WIDTH / 2., consts::GIZMO_HEIGHT / 2.);
+    //     let text_offset = Vector2::new(0.0, consts::NODE_LINE_HEIGHT / 2.0);
+    //     let top_text = text_center - text_offset;
+    //     let bottom_text = text_center + text_offset;
+
+    //     render_centered_text(d, top, top_text, font, secondary);
+    //     render_centered_text(d, bottom, bottom_text, font, Color::WHITE);
+    // }
 }
 
 fn render_cursor(d: &mut impl RaylibDraw, node_loc: NodeCoord, node: &ExecNode) {
-    let (line, column) = line_column(&node.text, node.cursor);
+    let (line, column) = node.cursor_line_column();
 
-    let x_offset = column as f32 * NODE_CHAR_WIDTH;
+    let x_offset = column as f32 * consts::NODE_CHAR_WIDTH;
 
     let cursor_top = node_loc.line_pos(line) + Vector2::new(x_offset, 0.);
-    let cursor_bottom = cursor_top + Vector2::new(0., NODE_LINE_HEIGHT);
+    let cursor_bottom = cursor_top + Vector2::new(0., consts::NODE_LINE_HEIGHT);
 
-    d.draw_line_ex(cursor_top, cursor_bottom, LINE_THICKNESS, Color::WHITE);
+    d.draw_line_ex(
+        cursor_top,
+        cursor_bottom,
+        consts::LINE_THICKNESS,
+        Color::WHITE,
+    );
 }
 
-fn render_error_squiggle(
-    d: &mut impl RaylibDraw,
-    node_loc: NodeCoord,
-    node_text: &NodeText,
-    line_no: u8,
-) {
-    let Some(line_len) = node_text.lines().nth(line_no as usize).map(str::len) else {
-        return;
-    };
+// fn render_error_squiggle(
+//     d: &mut impl RaylibDraw,
+//     node_loc: NodeCoord,
+//     node_text: &NodeText,
+//     line_no: u8,
+// ) {
+//     let Some(line_len) = node_text.lines().nth(line_no as usize).map(str::len) else {
+//         return;
+//     };
 
-    let squiggle_start = node_loc.line_pos(line_no as usize) + Vector2::new(0.0, NODE_LINE_HEIGHT);
-    let squiggle_end = squiggle_start + Vector2::new(line_len as f32 * NODE_CHAR_WIDTH, 0.0);
+//     let squiggle_start =
+//         node_loc.line_pos(line_no as usize) + Vector2::new(0.0, consts::NODE_LINE_HEIGHT);
+//     let squiggle_end =
+//         squiggle_start + Vector2::new(line_len as f32 * consts::NODE_CHAR_WIDTH, 0.0);
 
-    d.draw_line_ex(squiggle_start, squiggle_end, LINE_THICKNESS, Color::RED);
-}
+//     d.draw_line_ex(
+//         squiggle_start,
+//         squiggle_end,
+//         consts::LINE_THICKNESS,
+//         Color::RED,
+//     );
+// }
 
 fn render_io_arrow(
     d: &mut impl RaylibDraw,
@@ -1019,7 +750,7 @@ fn render_io_arrow(
     let component_offset = dir
         .rotate_right()
         .normalized()
-        .scale_by(1. / 3. * NODE_OUTSIDE_PADDING);
+        .scale_by(1. / 3. * consts::NODE_OUTSIDE_PADDING);
 
     let arrow_center = indicator_center - component_offset;
     let text_center = indicator_center + component_offset;
@@ -1036,66 +767,32 @@ fn render_dashed_line(
     color: Color,
     dashes: usize,
 ) {
-    let dash_len = NODE_OUTSIDE_SIDE_LENGTH / (2 * GHOST_NODE_DASHES + 1) as f32;
+    let dash_len = consts::NODE_OUTSIDE_SIDE_LENGTH / (2 * consts::GHOST_NODE_DASHES + 1) as f32;
 
     let dash_tail = (end_pos - start_pos).normalized().scale_by(dash_len);
 
     for dash_no in 0..=dashes {
         let dash_start = start_pos + dash_tail.scale_by(2.0 * dash_no as f32);
-        d.draw_line_ex(dash_start, dash_start + dash_tail, LINE_THICKNESS, color);
-    }
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-enum Dir {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-impl Dir {
-    const ALL: [Self; 4] = [Dir::Up, Dir::Down, Dir::Left, Dir::Right];
-
-    fn normalized(&self) -> Vector2 {
-        match self {
-            Dir::Up => Vector2::new(0.0, -1.0),
-            Dir::Down => Vector2::new(0.0, 1.0),
-            Dir::Left => Vector2::new(-1.0, 0.0),
-            Dir::Right => Vector2::new(1.0, 0.0),
-        }
-    }
-
-    fn inverse(&self) -> Self {
-        match self {
-            Dir::Up => Dir::Down,
-            Dir::Down => Dir::Up,
-            Dir::Left => Dir::Right,
-            Dir::Right => Dir::Left,
-        }
-    }
-
-    fn rotate_right(&self) -> Self {
-        match self {
-            Dir::Left => Dir::Up,
-            Dir::Up => Dir::Right,
-            Dir::Right => Dir::Down,
-            Dir::Down => Dir::Left,
-        }
+        d.draw_line_ex(
+            dash_start,
+            dash_start + dash_tail,
+            consts::LINE_THICKNESS,
+            color,
+        );
     }
 }
 
 fn render_plus(d: &mut impl RaylibDraw, center: Vector2, color: Color) {
     d.draw_line_ex(
-        center + Vector2::new(-NODE_LINE_HEIGHT, 0.0),
-        center + Vector2::new(NODE_LINE_HEIGHT, 0.0),
-        LINE_THICKNESS,
+        center + Vector2::new(-consts::NODE_LINE_HEIGHT, 0.0),
+        center + Vector2::new(consts::NODE_LINE_HEIGHT, 0.0),
+        consts::LINE_THICKNESS,
         color,
     );
     d.draw_line_ex(
-        center + Vector2::new(0.0, -NODE_LINE_HEIGHT),
-        center + Vector2::new(0.0, NODE_LINE_HEIGHT),
-        LINE_THICKNESS,
+        center + Vector2::new(0.0, -consts::NODE_LINE_HEIGHT),
+        center + Vector2::new(0.0, consts::NODE_LINE_HEIGHT),
+        consts::LINE_THICKNESS,
         color,
     );
 }
@@ -1103,56 +800,56 @@ fn render_plus(d: &mut impl RaylibDraw, center: Vector2, color: Color) {
 fn render_arrow(d: &mut impl RaylibDraw, center: Vector2, direction: Dir, color: Color) {
     let dir_vec = direction.normalized();
 
-    let arrow_tip = center + dir_vec.scale_by(NODE_LINE_HEIGHT);
-    let arrow_base = center - dir_vec.scale_by(NODE_LINE_HEIGHT);
+    let arrow_tip = center + dir_vec.scale_by(consts::NODE_LINE_HEIGHT);
+    let arrow_base = center - dir_vec.scale_by(consts::NODE_LINE_HEIGHT);
 
     let arrow_left_wing = center
         + dir_vec
-            .scale_by(NODE_LINE_HEIGHT)
+            .scale_by(consts::NODE_LINE_HEIGHT)
             .rotated((1.0 / 4.0) * f32::consts::TAU);
 
     let arrow_right_wing = center
         + dir_vec
-            .scale_by(NODE_LINE_HEIGHT)
+            .scale_by(consts::NODE_LINE_HEIGHT)
             .rotated(-(1.0 / 4.0) * f32::consts::TAU);
 
-    d.draw_line_ex(arrow_base, arrow_tip, LINE_THICKNESS, color);
-    d.draw_line_ex(arrow_tip, arrow_left_wing, LINE_THICKNESS, color);
-    d.draw_line_ex(arrow_tip, arrow_right_wing, LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_base, arrow_tip, consts::LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_tip, arrow_left_wing, consts::LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_tip, arrow_right_wing, consts::LINE_THICKNESS, color);
 }
 
 fn render_double_arrow(d: &mut impl RaylibDraw, center: Vector2, direction: Dir, color: Color) {
     let dir_vec = direction.normalized();
 
-    let half_arrow_stem = dir_vec.scale_by(NODE_LINE_HEIGHT);
+    let half_arrow_stem = dir_vec.scale_by(consts::NODE_LINE_HEIGHT);
 
     let arrow_tip = center + half_arrow_stem;
     let arrow_base = center - half_arrow_stem;
 
     let arrow_left_wing = center
         + dir_vec
-            .scale_by(NODE_LINE_HEIGHT)
+            .scale_by(consts::NODE_LINE_HEIGHT)
             .rotated((1.0 / 4.0) * f32::consts::TAU);
 
     let arrow_right_wing = center
         + dir_vec
-            .scale_by(NODE_LINE_HEIGHT)
+            .scale_by(consts::NODE_LINE_HEIGHT)
             .rotated(-(1.0 / 4.0) * f32::consts::TAU);
 
-    d.draw_line_ex(arrow_base, arrow_tip, LINE_THICKNESS, color);
-    d.draw_line_ex(arrow_tip, arrow_left_wing, LINE_THICKNESS, color);
-    d.draw_line_ex(arrow_tip, arrow_right_wing, LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_base, arrow_tip, consts::LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_tip, arrow_left_wing, consts::LINE_THICKNESS, color);
+    d.draw_line_ex(arrow_tip, arrow_right_wing, consts::LINE_THICKNESS, color);
 
     d.draw_line_ex(
         arrow_tip,
         arrow_left_wing + half_arrow_stem,
-        LINE_THICKNESS,
+        consts::LINE_THICKNESS,
         color,
     );
     d.draw_line_ex(
         arrow_tip,
         arrow_right_wing + half_arrow_stem,
-        LINE_THICKNESS,
+        consts::LINE_THICKNESS,
         color,
     );
 }
@@ -1161,25 +858,25 @@ fn render_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_color: 
     d.draw_line_ex(
         node_loc.top_left_corner(),
         node_loc.top_right_corner(),
-        LINE_THICKNESS,
+        consts::LINE_THICKNESS,
         line_color,
     );
     d.draw_line_ex(
         node_loc.top_left_corner(),
         node_loc.bottom_left_corner(),
-        LINE_THICKNESS,
+        consts::LINE_THICKNESS,
         line_color,
     );
     d.draw_line_ex(
         node_loc.bottom_left_corner(),
         node_loc.bottom_right_corner(),
-        LINE_THICKNESS,
+        consts::LINE_THICKNESS,
         line_color,
     );
     d.draw_line_ex(
         node_loc.top_right_corner(),
         node_loc.bottom_right_corner(),
-        LINE_THICKNESS,
+        consts::LINE_THICKNESS,
         line_color,
     );
 }
@@ -1191,7 +888,7 @@ fn render_centered_text(
     font: &Font,
     color: Color,
 ) {
-    let text_size = font.measure_text(text, NODE_FONT_SIZE, NODE_FONT_SPACING);
+    let text_size = font.measure_text(text, consts::NODE_FONT_SIZE, consts::NODE_FONT_SPACING);
 
     let top_left = center - text_size.scale_by(0.5);
 
@@ -1199,8 +896,8 @@ fn render_centered_text(
         font,
         text,
         top_left,
-        NODE_FONT_SIZE,
-        NODE_FONT_SPACING,
+        consts::NODE_FONT_SIZE,
+        consts::NODE_FONT_SPACING,
         color,
     );
 }
@@ -1211,28 +908,28 @@ fn render_dashed_node_border(d: &mut impl RaylibDraw, node_loc: NodeCoord, line_
         node_loc.top_left_corner(),
         node_loc.top_right_corner(),
         line_color,
-        GHOST_NODE_DASHES,
+        consts::GHOST_NODE_DASHES,
     );
     render_dashed_line(
         d,
         node_loc.top_left_corner(),
         node_loc.bottom_left_corner(),
         line_color,
-        GHOST_NODE_DASHES,
+        consts::GHOST_NODE_DASHES,
     );
     render_dashed_line(
         d,
         node_loc.bottom_left_corner(),
         node_loc.bottom_right_corner(),
         line_color,
-        GHOST_NODE_DASHES,
+        consts::GHOST_NODE_DASHES,
     );
     render_dashed_line(
         d,
         node_loc.top_right_corner(),
         node_loc.bottom_right_corner(),
         line_color,
-        GHOST_NODE_DASHES,
+        consts::GHOST_NODE_DASHES,
     );
 }
 
@@ -1416,7 +1113,7 @@ fn get_input(rl: &mut RaylibHandle, repeat: &mut RepeatKey) -> Input {
     let pressed = if let Some(key) = raylib_key_pressed {
         *repeat = RepeatKey::Held {
             key,
-            repeat_delay: KEY_REPEAT_DELAY_S,
+            repeat_delay: consts::KEY_REPEAT_DELAY_S,
         };
         raylib_key_pressed.and_then(|rk| Key::from(rk, shift_held))
     } else if let RepeatKey::Held { key, repeat_delay } = repeat
@@ -1424,7 +1121,7 @@ fn get_input(rl: &mut RaylibHandle, repeat: &mut RepeatKey) -> Input {
     {
         *repeat_delay -= rl.get_frame_time();
         if *repeat_delay <= 0.0 {
-            *repeat_delay = KEY_REPEAT_INTERVAL_S;
+            *repeat_delay = consts::KEY_REPEAT_INTERVAL_S;
             Key::from(*key, shift_held)
         } else {
             None
@@ -1538,8 +1235,8 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
 
         (mods @ (Modifiers::None | Modifiers::Shift), Key::Arrow(dir)) => {
             let mut nodes = model.nodes;
-            match nodes.get_mut(&model.highlighted_node) {
-                Some(Node::Exec(exec_node)) => {
+            match &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant) {
+                Some(NodeType::Exec(exec_node)) => {
                     let select = mods == Modifiers::Shift;
 
                     match dir {
@@ -1560,7 +1257,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                     })
                 }
 
-                None | Some(Node::Input(_)) => Update::no_output(Model {
+                None | Some(NodeType::Input(_)) => Update::no_output(Model {
                     nodes,
                     ghosts,
                     ..model
@@ -1613,7 +1310,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (Modifiers::Ctrl, Key::Char('A')) => {
             let mut nodes = model.nodes;
 
-            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+            if let Some(NodeType::Exec(exec_node)) =
+                nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            {
                 exec_node.select_all();
 
                 Update::no_output(Model {
@@ -1632,8 +1331,8 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
 
         (Modifiers::Ctrl, Key::Char('C')) => {
             if let Some(node) = model.nodes.get(&model.highlighted_node) {
-                match node {
-                    Node::Exec(exec_node) if exec_node.text_selected() => {
+                match &node.variant {
+                    NodeType::Exec(exec_node) if exec_node.text_selected() => {
                         let selection = exec_node.selection().to_string();
                         Update::Update {
                             new: Model {
@@ -1647,8 +1346,8 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                         }
                     }
 
-                    Node::Exec(exec_node) => {
-                        let node_text = exec_node.text.to_string();
+                    NodeType::Exec(exec_node) => {
+                        let node_text = exec_node.text().to_string();
 
                         Update::Update {
                             new: Model {
@@ -1664,7 +1363,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
 
                     // TODO: maybe this should copy the input data to
                     // the system clipboard too?
-                    Node::Input(_input_node) => Update::no_output(Model {
+                    NodeType::Input(_input_node) => Update::no_output(Model {
                         ghosts,
                         node_clipboard: Some(node.clone()),
                         ..model
@@ -1685,8 +1384,8 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                     ..model
                 }),
 
-                Entry::Occupied(mut entry) => match entry.get_mut() {
-                    Node::Exec(exec_node) if exec_node.text_selected() => {
+                Entry::Occupied(mut entry) => match &mut entry.get_mut().variant {
+                    NodeType::Exec(exec_node) if exec_node.text_selected() => {
                         let selection = exec_node.selection().to_string();
 
                         exec_node.insert("");
@@ -1703,7 +1402,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                         }
                     }
 
-                    Node::Exec(_) | Node::Input(_) => {
+                    NodeType::Exec(_) | NodeType::Input(_) => {
                         let cut_node = entry.remove();
 
                         Update::no_output(Model {
@@ -1731,23 +1430,25 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                     })
                 }
 
-                (_, Entry::Occupied(mut occupied_entry)) => match occupied_entry.get_mut() {
-                    Node::Exec(exec_node) => {
-                        exec_node.insert(&input.clipboard);
+                (_, Entry::Occupied(mut occupied_entry)) => {
+                    match &mut occupied_entry.get_mut().variant {
+                        NodeType::Exec(exec_node) => {
+                            exec_node.insert(&input.clipboard);
 
-                        Update::no_output(Model {
+                            Update::no_output(Model {
+                                ghosts,
+                                nodes,
+                                ..model
+                            })
+                        }
+
+                        NodeType::Input(_) => Update::no_output(Model {
                             ghosts,
                             nodes,
                             ..model
-                        })
+                        }),
                     }
-
-                    Node::Input(_) => Update::no_output(Model {
-                        ghosts,
-                        nodes,
-                        ..model
-                    }),
-                },
+                }
 
                 (None, Entry::Vacant(_)) => Update::no_output(Model {
                     ghosts,
@@ -1851,8 +1552,8 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
 
             match nodes.entry(model.highlighted_node) {
                 Entry::Occupied(mut occupied) => {
-                    match occupied.get_mut() {
-                        Node::Exec(exec_node) => {
+                    match &mut occupied.get_mut().variant {
+                        NodeType::Exec(exec_node) => {
                             // apparently this is the easiest way to turn a `char` into a `&str`
                             // (without allocating a single-char `String` first`)
                             let mut buf = [0; std::mem::size_of::<char>()];
@@ -1860,7 +1561,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
                             exec_node.insert(char.encode_utf8(&mut buf));
                         }
 
-                        Node::Input(_) => {
+                        NodeType::Input(_) => {
                             // TODO: handle direct node input?
                         }
                     }
@@ -1887,7 +1588,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (mods @ (Modifiers::None | Modifiers::Shift), Key::Home) => {
             let mut nodes = model.nodes;
 
-            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+            if let Some(NodeType::Exec(exec_node)) =
+                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            {
                 let select = mods == Modifiers::Shift;
 
                 exec_node.home(select);
@@ -1907,7 +1610,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (mods @ (Modifiers::None | Modifiers::Shift), Key::End) => {
             let mut nodes = model.nodes;
 
-            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+            if let Some(NodeType::Exec(exec_node)) =
+                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            {
                 let select = mods == Modifiers::Shift;
 
                 exec_node.end(select);
@@ -1927,7 +1632,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (Modifiers::None, Key::Backspace) => {
             let mut nodes = model.nodes;
 
-            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+            if let Some(NodeType::Exec(exec_node)) =
+                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            {
                 exec_node.backspace();
             }
 
@@ -1941,7 +1648,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (mods @ (Modifiers::None | Modifiers::Shift), Key::Enter) => {
             let mut nodes = model.nodes;
 
-            if let Some(Node::Exec(exec_node)) = nodes.get_mut(&model.highlighted_node) {
+            if let Some(NodeType::Exec(exec_node)) =
+                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            {
                 let select = mods == Modifiers::Shift;
 
                 exec_node.enter(select);
@@ -1967,268 +1676,6 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         | (Modifiers::Shift, Key::Backspace | Key::Delete | Key::Tab) => {
             Update::no_output(Model { ghosts, ..model })
         }
-    }
-}
-
-fn stop_execution(nodes: &Nodes, starting_node: NodeCoord) -> Option<Nodes> {
-    let new_nodes = Nodes::new();
-
-    match seek_nodes(nodes, new_nodes, starting_node, &mut stop_node_execution) {
-        Ok(new_nodes) => Some(new_nodes),
-        Err(_) => None,
-    }
-}
-
-fn stop_node_execution(
-    old_nodes: &Nodes,
-    mut new_nodes: Nodes,
-    node_loc: NodeCoord,
-) -> Result<Nodes, Nodes> {
-    let Some(mut node) = old_nodes.get(&node_loc).cloned() else {
-        return Err(new_nodes);
-    };
-
-    if new_nodes.contains_key(&node_loc) {
-        return Err(new_nodes);
-    }
-
-    match &mut node {
-        Node::Exec(exec_node) => {
-            if exec_node.exec.is_some() {
-                exec_node.exec = None;
-                new_nodes.insert(node_loc, node);
-                Ok(new_nodes)
-            } else {
-                Err(new_nodes)
-            }
-        }
-
-        Node::Input(input_node) => {
-            if input_node.index.is_some() {
-                input_node.index = None;
-                new_nodes.insert(node_loc, node);
-                Ok(new_nodes)
-            } else {
-                Err(new_nodes)
-            }
-        }
-    }
-}
-
-fn step_execution(nodes: &Nodes, starting_node: NodeCoord) -> Option<Nodes> {
-    let new_nodes = Nodes::new();
-
-    match seek_nodes(nodes, new_nodes, starting_node, &mut step_node_execution) {
-        Ok(new_nodes) => Some(new_nodes),
-        Err(_) => None,
-    }
-}
-
-fn seek_nodes(
-    old_nodes: &Nodes,
-    mut new_nodes: Nodes,
-    start_loc: NodeCoord,
-    transform: &mut impl FnMut(&Nodes, Nodes, NodeCoord) -> Result<Nodes, Nodes>,
-) -> Result<Nodes, Nodes> {
-    new_nodes = transform(old_nodes, new_nodes, start_loc)?;
-
-    for neighbor_dir in Dir::ALL {
-        let neighbor_loc = start_loc.neighbor(neighbor_dir);
-
-        new_nodes = match seek_nodes(old_nodes, new_nodes, neighbor_loc, transform) {
-            Ok(nodes) => nodes,
-            Err(nodes) => nodes,
-        }
-    }
-
-    Ok(new_nodes)
-}
-
-fn step_node_execution(
-    old_nodes: &Nodes,
-    mut new_nodes: Nodes,
-    node_loc: NodeCoord,
-) -> Result<Nodes, Nodes> {
-    let Some(mut node) = old_nodes.get(&node_loc).cloned() else {
-        return Err(new_nodes);
-    };
-
-    if new_nodes.contains_key(&node_loc) {
-        return Err(new_nodes);
-    }
-
-    match &mut node {
-        Node::Exec(exec_node) => {
-            let Some(ref mut exec) = exec_node.exec else {
-                if let Ok(exec) = NodeExec::init(&exec_node.text)
-                    && !exec.code.is_empty()
-                {
-                    exec_node.exec = Some(exec);
-                    new_nodes.insert(node_loc, node);
-                    return Ok(new_nodes);
-                } else {
-                    new_nodes.insert(node_loc, node);
-                    return Err(new_nodes);
-                }
-            };
-
-            if let NodeIO::Outbound(_, _) = exec.io {
-                new_nodes.try_insert(node_loc, node).unwrap();
-                return Ok(new_nodes);
-            }
-
-            match exec.code[exec.ip as usize].op {
-                Op::Mov(src, dst) => {
-                    if let Some(value) =
-                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
-                    {
-                        match dst {
-                            Dst::Acc => {
-                                exec.acc = value;
-                                exec.inc_ip();
-                            }
-                            Dst::Dir(target_dir) => exec.io = NodeIO::Outbound(target_dir, value),
-                            Dst::Nil => exec.inc_ip(),
-                        }
-                    }
-                }
-                Op::Nop => exec.inc_ip(),
-                Op::Swp => {
-                    (exec.acc, exec.bak) = (exec.bak, exec.acc);
-                    exec.inc_ip();
-                }
-                Op::Sav => {
-                    exec.bak = exec.acc;
-                    exec.inc_ip();
-                }
-                Op::Add(src) => {
-                    if let Some(value) =
-                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
-                    {
-                        exec.acc = exec.acc.saturating_add(value);
-                        exec.inc_ip();
-                    }
-                }
-                Op::Sub(src) => {
-                    if let Some(value) =
-                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
-                    {
-                        exec.acc = exec.acc.saturating_sub(value);
-                        exec.inc_ip();
-                    }
-                }
-                Op::Neg => {
-                    exec.acc = -exec.acc;
-                    exec.inc_ip();
-                }
-                Op::Jmp(target) => exec.ip = target,
-                Op::Jez(target) => {
-                    if exec.acc == 0 {
-                        exec.ip = target
-                    } else {
-                        exec.inc_ip();
-                    }
-                }
-                Op::Jnz(target) => {
-                    if exec.acc != 0 {
-                        exec.ip = target
-                    } else {
-                        exec.inc_ip();
-                    }
-                }
-                Op::Jgz(target) => {
-                    if exec.acc > 0 {
-                        exec.ip = target
-                    } else {
-                        exec.inc_ip();
-                    }
-                }
-                Op::Jlz(target) => {
-                    if exec.acc < 0 {
-                        exec.ip = target
-                    } else {
-                        exec.inc_ip();
-                    }
-                }
-                Op::Jro(src) => {
-                    if let Some(value) =
-                        get_src_value(exec, node_loc, old_nodes, &mut new_nodes, src)
-                    {
-                        exec.jro(value);
-                    }
-                }
-            }
-        }
-
-        Node::Input(input_node) => {
-            if input_node.index.is_none() {
-                input_node.index = Some(0);
-            }
-        }
-    }
-
-    new_nodes.try_insert(node_loc, node).unwrap();
-
-    Ok(new_nodes)
-}
-
-fn get_src_value(
-    exec: &mut NodeExec,
-    node_loc: NodeCoord,
-    old_nodes: &Nodes,
-    new_nodes: &mut Nodes,
-    src: Src,
-) -> Option<Num> {
-    match src {
-        Src::Imm(num) => Some(num),
-        Src::Acc => Some(exec.acc),
-        Src::Dir(target_dir) => {
-            exec.io = NodeIO::Inbound(target_dir);
-
-            let neighbor_loc = node_loc.neighbor(target_dir);
-            let neighbor = old_nodes.get(&neighbor_loc)?;
-
-            match neighbor {
-                Node::Exec(exec_node) => {
-                    let mut neighbor = exec_node.clone();
-                    let neighbor_exec = neighbor.exec.as_mut()?;
-
-                    if let NodeIO::Outbound(neighbor_outbound_dir, value) = neighbor_exec.io
-                        && neighbor_outbound_dir == target_dir.inverse()
-                    {
-                        neighbor_exec.inc_ip();
-
-                        neighbor_exec.io = NodeIO::None;
-                        exec.io = NodeIO::None;
-
-                        new_nodes.insert(neighbor_loc, Node::Exec(neighbor));
-
-                        Some(value)
-                    } else {
-                        None
-                    }
-                }
-
-                Node::Input(input_node) if target_dir == Dir::Up => {
-                    let mut neighbor = input_node.clone();
-                    let current = neighbor.current();
-                    let neighbor_index = neighbor.index.as_mut()?;
-
-                    if let Some(num) = current {
-                        *neighbor_index += 1;
-
-                        new_nodes.insert(neighbor_loc, Node::Input(neighbor));
-
-                        Some(num)
-                    } else {
-                        None
-                    }
-                }
-
-                Node::Input(_) => None,
-            }
-        }
-        Src::Nil => Some(0),
     }
 }
 
@@ -2258,289 +1705,11 @@ fn update_camera(
 
 type Num = i8;
 
-type NodeCode<Label = u8> = ArrayVec<Instruction<Label>, NODE_LINES>;
-
 #[derive(Clone, Debug)]
 struct NodeExec {
     acc: Num,
     bak: Num,
-    code: NodeCode,
-    io: NodeIO,
     ip: u8,
-}
-
-#[derive(PartialEq, Eq, Clone, Debug)]
-enum NodeIO {
-    None,
-    Outbound(Dir, Num),
-    Inbound(Dir),
-}
-
-impl NodeExec {
-    fn init(node_text: &NodeText) -> Result<Self, ParseErr> {
-        let code = parse_node_text(node_text)?;
-
-        Ok(Self {
-            acc: 0,
-            bak: 0,
-            code,
-            io: NodeIO::None,
-            ip: 0,
-        })
-    }
-
-    fn inc_ip(&mut self) {
-        self.ip += 1;
-        if self.ip as usize >= self.code.len() {
-            self.ip = 0;
-        }
-    }
-
-    fn jro(&mut self, offset: Num) {
-        if offset < 0 {
-            self.ip = self.ip.saturating_sub(offset.abs() as u8);
-        } else {
-            self.ip = self.ip.saturating_add(offset as u8);
-            if self.ip as usize >= self.code.len() {
-                self.ip = (self.code.len() - 1) as u8;
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Instruction<Label: Debug + Copy = u8> {
-    op: Op<Label>,
-    src_line: u8,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Op<Label: Debug + Copy> {
-    Mov(Src, Dst),
-    Nop,
-    Swp,
-    Sav,
-    Add(Src),
-    Sub(Src),
-    Neg,
-    Jmp(Label),
-    Jez(Label),
-    Jnz(Label),
-    Jgz(Label),
-    Jlz(Label),
-    Jro(Src),
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Src {
-    Imm(Num),
-    Dir(Dir),
-    Acc,
-    Nil,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Dst {
-    Dir(Dir),
-    Acc,
-    Nil,
-}
-
-#[derive(Clone, Debug)]
-struct ParseErr {
-    problem: ParseProblem,
-    line: u8,
-}
-
-#[derive(Clone, Debug)]
-enum ParseProblem {
-    NotEnoughArgs,
-    TooManyArgs,
-    InvalidSrc,
-    InvalidDst,
-    InvalidInstruction,
-    UndefinedLabel,
-}
-
-impl ParseProblem {
-    fn to_str(&self) -> &'static str {
-        match self {
-            ParseProblem::NotEnoughArgs => "NOT ENOUGH ARGS",
-            ParseProblem::TooManyArgs => "TOO MANY ARGS",
-            ParseProblem::InvalidSrc => "INVALID SOURCE ARG",
-            ParseProblem::InvalidDst => "INVALID DESTINATION ARG",
-            ParseProblem::InvalidInstruction => "INVALID OPCODE",
-            ParseProblem::UndefinedLabel => "UNDEFINED LABEL",
-        }
-    }
-}
-
-fn parse_node_text(node_text: &NodeText) -> Result<NodeCode, ParseErr> {
-    let mut code = NodeCode::<&str>::new();
-
-    // maps labels to instruction indices
-    let mut labels: HashMap<&str, u8> = HashMap::new();
-
-    for (line_no, full_line) in node_text.split('\n').enumerate() {
-        let Some(semantic_text) = full_line.split('#').next() else {
-            continue;
-        };
-
-        let op_text = match semantic_text.split_once(':') {
-            Some((label, rest)) => {
-                // label refers to the next instruction to be pushed to the list of instructions
-                let label_dest = code.len();
-                labels.insert(label, label_dest as u8);
-                rest
-            }
-            None => semantic_text,
-        };
-
-        let tokens = &mut op_text.split_ascii_whitespace();
-
-        let Some(opcode) = tokens.next() else {
-            continue;
-        };
-
-        let line_no = line_no as u8;
-
-        let op = match opcode {
-            "MOV" => Op::Mov(expect_src(tokens, line_no)?, expect_dst(tokens, line_no)?),
-            "NOP" => Op::Nop,
-            "SWP" => Op::Swp,
-            "SAV" => Op::Sav,
-            "ADD" => Op::Add(expect_src(tokens, line_no)?),
-            "SUB" => Op::Sub(expect_src(tokens, line_no)?),
-            "NEG" => Op::Neg,
-            "JMP" => Op::Jmp(expect_label(tokens, line_no)?),
-            "JEZ" => Op::Jez(expect_label(tokens, line_no)?),
-            "JNZ" => Op::Jnz(expect_label(tokens, line_no)?),
-            "JGZ" => Op::Jgz(expect_label(tokens, line_no)?),
-            "JLZ" => Op::Jlz(expect_label(tokens, line_no)?),
-            "JRO" => Op::Jro(expect_src(tokens, line_no)?),
-
-            _ => {
-                return Err(ParseErr {
-                    problem: ParseProblem::InvalidInstruction,
-                    line: line_no,
-                });
-            }
-        };
-
-        if tokens.next().is_some() {
-            return Err(ParseErr {
-                problem: ParseProblem::TooManyArgs,
-                line: line_no,
-            });
-        }
-
-        code.push(Instruction {
-            op,
-            src_line: line_no,
-        });
-    }
-
-    code.into_iter()
-        .map(|instr| {
-            let resolve = |label: &str| {
-                labels.get(&label).copied().ok_or(ParseErr {
-                    problem: ParseProblem::UndefinedLabel,
-                    line: instr.src_line,
-                })
-            };
-
-            let op = match instr.op {
-                Op::Mov(src, dst) => Op::Mov(src, dst),
-                Op::Nop => Op::Nop,
-                Op::Swp => Op::Swp,
-                Op::Sav => Op::Sav,
-                Op::Add(src) => Op::Add(src),
-                Op::Sub(src) => Op::Sub(src),
-                Op::Neg => Op::Neg,
-                Op::Jmp(label) => Op::Jmp(resolve(label)?),
-                Op::Jez(label) => Op::Jez(resolve(label)?),
-                Op::Jnz(label) => Op::Jnz(resolve(label)?),
-                Op::Jgz(label) => Op::Jgz(resolve(label)?),
-                Op::Jlz(label) => Op::Jlz(resolve(label)?),
-                Op::Jro(src) => Op::Jro(src),
-            };
-
-            Ok(Instruction {
-                op,
-                src_line: instr.src_line,
-            })
-        })
-        .try_collect()
-}
-
-fn expect_label<'txt>(
-    tokens: &mut impl Iterator<Item = &'txt str>,
-    line: u8,
-) -> Result<&'txt str, ParseErr> {
-    let Some(label) = tokens.next() else {
-        return Err(ParseErr {
-            problem: ParseProblem::NotEnoughArgs,
-            line,
-        });
-    };
-
-    Ok(label)
-}
-
-fn expect_src<'txt>(
-    tokens: &mut impl Iterator<Item = &'txt str>,
-    line: u8,
-) -> Result<Src, ParseErr> {
-    let Some(arg) = tokens.next() else {
-        return Err(ParseErr {
-            problem: ParseProblem::NotEnoughArgs,
-            line,
-        });
-    };
-
-    match arg {
-        "ACC" => Ok(Src::Acc),
-        "UP" => Ok(Src::Dir(Dir::Up)),
-        "DOWN" => Ok(Src::Dir(Dir::Down)),
-        "LEFT" => Ok(Src::Dir(Dir::Left)),
-        "RIGHT" => Ok(Src::Dir(Dir::Right)),
-        "NIL" => Ok(Src::Nil),
-        other => {
-            if let Ok(num) = other.parse() {
-                Ok(Src::Imm(num))
-            } else {
-                Err(ParseErr {
-                    problem: ParseProblem::InvalidSrc,
-                    line,
-                })
-            }
-        }
-    }
-}
-
-fn expect_dst<'txt>(
-    tokens: &mut impl Iterator<Item = &'txt str>,
-    line: u8,
-) -> Result<Dst, ParseErr> {
-    let Some(arg) = tokens.next() else {
-        return Err(ParseErr {
-            problem: ParseProblem::NotEnoughArgs,
-            line,
-        });
-    };
-
-    match arg {
-        "ACC" => Ok(Dst::Acc),
-        "UP" => Ok(Dst::Dir(Dir::Up)),
-        "DOWN" => Ok(Dst::Dir(Dir::Down)),
-        "LEFT" => Ok(Dst::Dir(Dir::Left)),
-        "RIGHT" => Ok(Dst::Dir(Dir::Right)),
-        "NIL" => Ok(Dst::Nil),
-        _ => Err(ParseErr {
-            problem: ParseProblem::InvalidDst,
-            line,
-        }),
-    }
 }
 
 #[derive(Debug)]
@@ -2607,7 +1776,7 @@ fn parse_node(key: &str, value: Value) -> Result<(NodeCoord, Node), ImportErr> {
                 })
                 .try_collect()?;
 
-            Node::Input(InputNode::with_data(data))
+            Node::input_with_data(data)
         }
 
         _ => return Err(ImportErr::InvalidRhs),
@@ -2641,30 +1810,31 @@ fn fmt_coord(node_loc: &NodeCoord) -> String {
 }
 
 fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> String {
-    let mut toml = String::new();
+    todo!()
+    // let mut toml = String::new();
 
-    for (node_loc, node) in nodes {
-        let key = fmt_coord(node_loc);
+    // for (node_loc, node) in nodes {
+    //     let key = fmt_coord(node_loc);
 
-        toml += &match node {
-            Node::Exec(exec_node) => {
-                format!("\"{}\" = \"\"\"\n{}\n\"\"\"\n\n", key, &exec_node.text)
-            }
-            Node::Input(input_node) => {
-                let mut fmt = format!("\"{}\" = [ ", key);
+    //     toml += &match node {
+    //         NodeType::Exec(exec_node) => {
+    //             format!("\"{}\" = \"\"\"\n{}\n\"\"\"\n\n", key, &exec_node.text)
+    //         }
+    //         NodeType::Input(input_node) => {
+    //             let mut fmt = format!("\"{}\" = [ ", key);
 
-                for num in &input_node.data {
-                    fmt += &format!("{num}, ");
-                }
+    //             for num in &input_node.data {
+    //                 fmt += &format!("{num}, ");
+    //             }
 
-                fmt + "]\n\n"
-            }
-        };
-    }
+    //             fmt + "]\n\n"
+    //         }
+    //     };
+    // }
 
-    if let Some(highlighted) = highlighted_node {
-        toml += &format!("{HIGHLIGHTED_NODE_KEY} = \"{}\"", fmt_coord(&highlighted));
-    }
+    // if let Some(highlighted) = highlighted_node {
+    //     toml += &format!("{HIGHLIGHTED_NODE_KEY} = \"{}\"", fmt_coord(&highlighted));
+    // }
 
-    toml
+    // toml
 }
