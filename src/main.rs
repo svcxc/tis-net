@@ -14,6 +14,7 @@ use crate::exec_node::{ExecNode, ExecNodeState, ParseErr, ParseProblem};
 use crate::input_node::InputNode;
 
 use std::{
+    cmp::Ordering,
     collections::{HashMap, hash_map::Entry},
     f32,
     fmt::Debug,
@@ -21,6 +22,7 @@ use std::{
 
 use arrayvec::{ArrayString, ArrayVec};
 use raylib::prelude::*;
+use sorted_vec::SortedSet;
 
 type Nodes = HashMap<NodeCoord, Node>;
 
@@ -110,6 +112,22 @@ impl Node {
 struct NodeCoord {
     x: isize,
     y: isize,
+}
+
+impl Ord for NodeCoord {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.y.cmp(&other.y) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Equal => self.x.cmp(&other.x),
+        }
+    }
+}
+
+impl PartialOrd for NodeCoord {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl NodeCoord {
@@ -1202,18 +1220,18 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
 
     match (input.mods, pressed) {
         (_, Key::Esc) => {
-            if let Some(updated_nodes) = stop_execution(&model.nodes, model.highlighted_node) {
-                let mut nodes = model.nodes;
+            let mut nodes = model.nodes;
 
-                nodes.extend(updated_nodes);
+            let stop_result = stop_execution(&mut model.nodes, model.highlighted_node);
 
-                Update::no_output(Model {
+            match stop_result {
+                StopResult::Stopped => Update::no_output(Model {
                     ghosts,
                     nodes,
                     ..model
-                })
-            } else {
-                Update::Exit
+                }),
+
+                StopResult::WasAlreadyStopped => Update::Exit,
             }
         }
 
@@ -1677,6 +1695,57 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
             Update::no_output(Model { ghosts, ..model })
         }
     }
+}
+
+fn seek_nodes(nodes: &Nodes, start: NodeCoord) -> SortedSet<NodeCoord> {
+    fn helper(nodes: &Nodes, current: NodeCoord, set: &mut SortedSet<NodeCoord>) {
+        if !set.contains(&current) {
+            for dir in Dir::ALL {
+                helper(nodes, current.neighbor(dir), set);
+            }
+        }
+    }
+
+    let mut set = SortedSet::new();
+
+    set.insert(start);
+
+    helper(nodes, start, &mut set);
+
+    set
+}
+
+enum StopResult {
+    WasAlreadyStopped,
+    Stopped,
+}
+
+impl StopResult {
+    fn reconcile(&mut self, other: Self) {
+        match self {
+            Self::WasAlreadyStopped => *self = other,
+            Self::Stopped => {}
+        }
+    }
+}
+
+fn stop_execution(nodes: &mut Nodes, start: NodeCoord) -> StopResult {
+    let mut stop_result = StopResult::WasAlreadyStopped;
+
+    for node_loc in seek_nodes(&nodes, start) {
+        // TODO: can this expect be removed somehow?
+        let node = nodes
+            .get_mut(&node_loc)
+            .expect("seek_nodes() shouldn't return a NodeLoc that isn't occupied");
+
+        stop_result.reconcile(stop_node_execution(node))
+    }
+
+    stop_result
+}
+
+fn stop_node_execution(nodes: &mut Node) -> StopResult {
+    todo!()
 }
 
 fn update_camera(
