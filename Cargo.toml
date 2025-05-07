@@ -8,3 +8,6 @@ raylib = "5.0.2"
 arrayvec = "0.7.6"
 rfd = "0.15.3"
 toml = "0.8.20"
+
+[toolchain]
+channel = "nightly"
