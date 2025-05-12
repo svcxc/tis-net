@@ -1,4 +1,4 @@
-use crate::num::Num;
+use crate::node::{Num, StopResult};
 use arrayvec::ArrayVec;
 
 pub const INPUT_NODE_CAP: usize = 39;
@@ -23,5 +23,14 @@ impl InputNode {
 
     pub fn current(&self) -> Option<Num> {
         self.data.get(self.index?).copied()
+    }
+
+    pub fn stop(&mut self) -> StopResult {
+        if self.index.is_some() {
+            self.index = None;
+            StopResult::Stopped
+        } else {
+            StopResult::WasAlreadyStopped
+        }
     }
 }

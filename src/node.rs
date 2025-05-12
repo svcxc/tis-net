@@ -1,3 +1,19 @@
+pub type Num = i8;
+
+pub enum StopResult {
+    WasAlreadyStopped,
+    Stopped,
+}
+
+impl StopResult {
+    pub fn reconcile(&mut self, other: Self) {
+        match self {
+            Self::WasAlreadyStopped => *self = other,
+            Self::Stopped => {}
+        }
+    }
+}
+
 use raylib::math::Vector2;
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -38,3 +54,16 @@ impl Dir {
         }
     }
 }
+
+#[derive(Clone, Debug)]
+pub enum NodeOutbox {
+    Empty,
+    Directional(Dir, Num),
+    Any(Num),
+}
+
+// impl NodeOutbox {
+//     fn try_take() -> Option<Num> {
+
+//     }
+// }

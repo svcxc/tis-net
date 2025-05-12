@@ -2,16 +2,17 @@
 #![feature(map_try_insert)]
 #![feature(iterator_try_collect)]
 #![feature(iter_intersperse)]
+#![feature(map_many_mut)]
 
 mod consts;
-mod dir;
 mod exec_node;
 mod input_node;
-mod num;
+mod node;
 
-use crate::dir::Dir;
-use crate::exec_node::{ExecNode, ExecNodeState, ParseErr, ParseProblem};
+use crate::exec_node::{ExecNode, ExecNodeState, Gizmos, ParseErr, ParseProblem};
 use crate::input_node::InputNode;
+use crate::node::Dir;
+use crate::node::StopResult;
 
 use std::{
     cmp::Ordering,
@@ -21,6 +22,7 @@ use std::{
 };
 
 use arrayvec::{ArrayString, ArrayVec};
+use node::NodeOutbox;
 use raylib::prelude::*;
 use sorted_vec::SortedSet;
 
@@ -63,13 +65,6 @@ struct Node {
 enum NodeType {
     Exec(ExecNode),
     Input(InputNode),
-}
-
-#[derive(Clone, Debug)]
-enum NodeOutbox {
-    Empty,
-    Directional(Dir, Num),
-    Any(Num),
 }
 
 impl Node {
@@ -348,13 +343,24 @@ fn render_nodes(d: &mut impl RaylibDraw, model: &Model, font: &Font) {
             NodeType::Exec(exec_node) => {
                 render_node_border(d, *node_loc, line_color);
 
-                let state = exec_node.state();
+                render_node_text(d, exec_node, node_loc, font);
 
-                todo!()
+                render_node_gizmos(
+                    d,
+                    *node_loc,
+                    exec_node.gizmos(),
+                    font,
+                    line_color,
+                    Color::GRAY,
+                );
 
-                // render_node_gizmos(d, *node_loc, &exec_node.exec, font, line_color, Color::GRAY);
-
-                // render_node_text(d, exec_node, node_loc, font);
+                match exec_node.state() {
+                    ExecNodeState::Empty | ExecNodeState::Ready(array_vec) => {}
+                    ExecNodeState::Errored(error) => {
+                        render_error_squiggle(d, *node_loc, exec_node.text(), error.line);
+                    }
+                    ExecNodeState::Running(runtime) => todo!(),
+                }
 
                 // the below two things should not be true at the same time if I did my homework
                 // (because a node with an error should not be able to begin executing)
@@ -641,80 +647,61 @@ fn neighbor_sending_io(nodes: &Nodes, node_loc: &NodeCoord, io_dir: Dir) -> bool
 fn render_node_gizmos(
     d: &mut impl RaylibDraw,
     node_loc: NodeCoord,
-    exec: &ExecNodeState,
+    gizmos: Gizmos,
     font: &Font,
     primary: Color,
     secondary: Color,
 ) {
-    todo!()
+    let placeholder_gizmos: [(&str, &str); 4] = [
+        ("ACC", &gizmos.acc),
+        ("BAK", &gizmos.bak),
+        ("LAST", gizmos.last),
+        ("MODE", gizmos.mode),
+    ];
 
-    // let (acc_string, bak_string);
+    for (i, (top, bottom)) in placeholder_gizmos.into_iter().enumerate() {
+        let gizmos_top_left = node_loc.top_right_corner()
+            - Vector2::new(consts::GIZMO_WIDTH, i as f32 * -consts::GIZMO_HEIGHT);
 
-    // let (acc, bak, mode) = if let Some(exec) = exec {
-    //     acc_string = exec.acc.to_string();
+        let left_right = Vector2::new(consts::GIZMO_WIDTH, 0.0);
+        let top_down = Vector2::new(0.0, consts::GIZMO_HEIGHT);
 
-    //     bak_string = if exec.bak < -99 {
-    //         exec.bak.to_string()
-    //     } else {
-    //         format!("({})", exec.bak)
-    //     };
+        // draws a rectangle out of individual lines
+        // doing this makes the lines centered, rather than aligned to the outside
+        d.draw_line_ex(
+            gizmos_top_left,
+            gizmos_top_left + left_right,
+            consts::LINE_THICKNESS,
+            primary,
+        );
+        d.draw_line_ex(
+            gizmos_top_left,
+            gizmos_top_left + top_down,
+            consts::LINE_THICKNESS,
+            primary,
+        );
+        d.draw_line_ex(
+            gizmos_top_left + left_right,
+            gizmos_top_left + left_right + top_down,
+            consts::LINE_THICKNESS,
+            primary,
+        );
+        d.draw_line_ex(
+            gizmos_top_left + top_down,
+            gizmos_top_left + top_down + left_right,
+            consts::LINE_THICKNESS,
+            primary,
+        );
 
-    //     let mode_str = match exec.io {
-    //         NodeIO::None => "EXEC",
-    //         NodeIO::Inbound(_) => "READ",
-    //         NodeIO::Outbound(_, _) => "WRTE",
-    //     };
+        let text_center =
+            gizmos_top_left + Vector2::new(consts::GIZMO_WIDTH / 2., consts::GIZMO_HEIGHT / 2.);
+        let text_offset = Vector2::new(0.0, consts::NODE_LINE_HEIGHT / 2.0);
+        let top_text = text_center - text_offset;
+        let bottom_text = text_center + text_offset;
 
-    //     (acc_string.as_str(), bak_string.as_str(), mode_str)
-    // } else {
-    //     ("0", "(0)", "EDIT")
-    // };
-
-    // let placeholder_gizmos = [("ACC", acc), ("BAK", bak), ("LAST", "N/A"), ("MODE", mode)];
-
-    // for (i, (top, bottom)) in placeholder_gizmos.into_iter().enumerate() {
-    //     let gizmos_top_left = node_loc.top_right_corner()
-    //         - Vector2::new(consts::GIZMO_WIDTH, i as f32 * -consts::GIZMO_HEIGHT);
-
-    //     let left_right = Vector2::new(consts::GIZMO_WIDTH, 0.0);
-    //     let top_down = Vector2::new(0.0, consts::GIZMO_HEIGHT);
-
-    //     // draws a rectangle out of individual lines
-    //     // doing this makes the lines centered, rather than aligned to the outside
-    //     d.draw_line_ex(
-    //         gizmos_top_left,
-    //         gizmos_top_left + left_right,
-    //         consts::LINE_THICKNESS,
-    //         primary,
-    //     );
-    //     d.draw_line_ex(
-    //         gizmos_top_left,
-    //         gizmos_top_left + top_down,
-    //         consts::LINE_THICKNESS,
-    //         primary,
-    //     );
-    //     d.draw_line_ex(
-    //         gizmos_top_left + left_right,
-    //         gizmos_top_left + left_right + top_down,
-    //         consts::LINE_THICKNESS,
-    //         primary,
-    //     );
-    //     d.draw_line_ex(
-    //         gizmos_top_left + top_down,
-    //         gizmos_top_left + top_down + left_right,
-    //         consts::LINE_THICKNESS,
-    //         primary,
-    //     );
-
-    //     let text_center =
-    //         gizmos_top_left + Vector2::new(consts::GIZMO_WIDTH / 2., consts::GIZMO_HEIGHT / 2.);
-    //     let text_offset = Vector2::new(0.0, consts::NODE_LINE_HEIGHT / 2.0);
-    //     let top_text = text_center - text_offset;
-    //     let bottom_text = text_center + text_offset;
-
-    //     render_centered_text(d, top, top_text, font, secondary);
-    //     render_centered_text(d, bottom, bottom_text, font, Color::WHITE);
-    // }
+        render_centered_text(d, top, top_text, font, secondary);
+        render_centered_text(d, bottom, bottom_text, font, Color::WHITE);
+    }
 }
 
 fn render_cursor(d: &mut impl RaylibDraw, node_loc: NodeCoord, node: &ExecNode) {
@@ -733,28 +720,28 @@ fn render_cursor(d: &mut impl RaylibDraw, node_loc: NodeCoord, node: &ExecNode) 
     );
 }
 
-// fn render_error_squiggle(
-//     d: &mut impl RaylibDraw,
-//     node_loc: NodeCoord,
-//     node_text: &NodeText,
-//     line_no: u8,
-// ) {
-//     let Some(line_len) = node_text.lines().nth(line_no as usize).map(str::len) else {
-//         return;
-//     };
+fn render_error_squiggle(
+    d: &mut impl RaylibDraw,
+    node_loc: NodeCoord,
+    node_text: &str,
+    line_no: u8,
+) {
+    let Some(line_len) = node_text.lines().nth(line_no as usize).map(str::len) else {
+        return;
+    };
 
-//     let squiggle_start =
-//         node_loc.line_pos(line_no as usize) + Vector2::new(0.0, consts::NODE_LINE_HEIGHT);
-//     let squiggle_end =
-//         squiggle_start + Vector2::new(line_len as f32 * consts::NODE_CHAR_WIDTH, 0.0);
+    let squiggle_start =
+        node_loc.line_pos(line_no as usize) + Vector2::new(0.0, consts::NODE_LINE_HEIGHT);
+    let squiggle_end =
+        squiggle_start + Vector2::new(line_len as f32 * consts::NODE_CHAR_WIDTH, 0.0);
 
-//     d.draw_line_ex(
-//         squiggle_start,
-//         squiggle_end,
-//         consts::LINE_THICKNESS,
-//         Color::RED,
-//     );
-// }
+    d.draw_line_ex(
+        squiggle_start,
+        squiggle_end,
+        consts::LINE_THICKNESS,
+        Color::RED,
+    );
+}
 
 fn render_io_arrow(
     d: &mut impl RaylibDraw,
@@ -1222,9 +1209,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (_, Key::Esc) => {
             let mut nodes = model.nodes;
 
-            let stop_result = stop_execution(&mut model.nodes, model.highlighted_node);
-
-            match stop_result {
+            match stop_execution(&mut nodes, model.highlighted_node) {
                 StopResult::Stopped => Update::no_output(Model {
                     ghosts,
                     nodes,
@@ -1236,24 +1221,23 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         }
 
         (Modifiers::None, Key::Tab) => {
-            if let Some(updated_nodes) = step_execution(&model.nodes, model.highlighted_node) {
-                let mut nodes = model.nodes;
+            let mut nodes = model.nodes;
 
-                nodes.extend(updated_nodes);
+            step_execution(&mut nodes, model.highlighted_node);
 
-                Update::no_output(Model {
-                    nodes,
-                    ghosts,
-                    ..model
-                })
-            } else {
-                Update::no_output(Model { ghosts, ..model })
-            }
+            Update::no_output(Model {
+                nodes,
+                ghosts,
+                ..model
+            })
         }
 
         (mods @ (Modifiers::None | Modifiers::Shift), Key::Arrow(dir)) => {
             let mut nodes = model.nodes;
-            match &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant) {
+            match nodes
+                .get_mut(&model.highlighted_node)
+                .map(|n| &mut n.variant)
+            {
                 Some(NodeType::Exec(exec_node)) => {
                     let select = mods == Modifiers::Shift;
 
@@ -1328,8 +1312,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (Modifiers::Ctrl, Key::Char('A')) => {
             let mut nodes = model.nodes;
 
-            if let Some(NodeType::Exec(exec_node)) =
-                nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            if let Some(NodeType::Exec(exec_node)) = nodes
+                .get_mut(&model.highlighted_node)
+                .map(|n| &mut n.variant)
             {
                 exec_node.select_all();
 
@@ -1606,8 +1591,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (mods @ (Modifiers::None | Modifiers::Shift), Key::Home) => {
             let mut nodes = model.nodes;
 
-            if let Some(NodeType::Exec(exec_node)) =
-                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            if let Some(NodeType::Exec(exec_node)) = nodes
+                .get_mut(&model.highlighted_node)
+                .map(|n| &mut n.variant)
             {
                 let select = mods == Modifiers::Shift;
 
@@ -1628,8 +1614,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (mods @ (Modifiers::None | Modifiers::Shift), Key::End) => {
             let mut nodes = model.nodes;
 
-            if let Some(NodeType::Exec(exec_node)) =
-                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            if let Some(NodeType::Exec(exec_node)) = nodes
+                .get_mut(&model.highlighted_node)
+                .map(|n| &mut n.variant)
             {
                 let select = mods == Modifiers::Shift;
 
@@ -1650,8 +1637,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (Modifiers::None, Key::Backspace) => {
             let mut nodes = model.nodes;
 
-            if let Some(NodeType::Exec(exec_node)) =
-                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            if let Some(NodeType::Exec(exec_node)) = nodes
+                .get_mut(&model.highlighted_node)
+                .map(|n| &mut n.variant)
             {
                 exec_node.backspace();
             }
@@ -1666,8 +1654,9 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
         (mods @ (Modifiers::None | Modifiers::Shift), Key::Enter) => {
             let mut nodes = model.nodes;
 
-            if let Some(NodeType::Exec(exec_node)) =
-                &mut nodes.get_mut(&model.highlighted_node).map(|n| n.variant)
+            if let Some(NodeType::Exec(exec_node)) = nodes
+                .get_mut(&model.highlighted_node)
+                .map(|n| &mut n.variant)
             {
                 let select = mods == Modifiers::Shift;
 
@@ -1699,7 +1688,7 @@ fn handle_input(model: Model, input: &Input) -> Update<Model> {
 
 fn seek_nodes(nodes: &Nodes, start: NodeCoord) -> SortedSet<NodeCoord> {
     fn helper(nodes: &Nodes, current: NodeCoord, set: &mut SortedSet<NodeCoord>) {
-        if !set.contains(&current) {
+        if nodes.contains_key(&current) && set.find_or_insert(current).is_inserted() {
             for dir in Dir::ALL {
                 helper(nodes, current.neighbor(dir), set);
             }
@@ -1708,25 +1697,9 @@ fn seek_nodes(nodes: &Nodes, start: NodeCoord) -> SortedSet<NodeCoord> {
 
     let mut set = SortedSet::new();
 
-    set.insert(start);
-
     helper(nodes, start, &mut set);
 
     set
-}
-
-enum StopResult {
-    WasAlreadyStopped,
-    Stopped,
-}
-
-impl StopResult {
-    fn reconcile(&mut self, other: Self) {
-        match self {
-            Self::WasAlreadyStopped => *self = other,
-            Self::Stopped => {}
-        }
-    }
 }
 
 fn stop_execution(nodes: &mut Nodes, start: NodeCoord) -> StopResult {
@@ -1744,8 +1717,97 @@ fn stop_execution(nodes: &mut Nodes, start: NodeCoord) -> StopResult {
     stop_result
 }
 
-fn stop_node_execution(nodes: &mut Node) -> StopResult {
-    todo!()
+fn stop_node_execution(node: &mut Node) -> StopResult {
+    node.outbox = NodeOutbox::Empty;
+
+    match &mut node.variant {
+        NodeType::Exec(exec_node) => exec_node.stop(),
+        NodeType::Input(input_node) => input_node.stop(),
+    }
+}
+
+/// meant to store the nodes that have been read from already this cycle
+/// this is to prevent two reads from happening in one cycle
+/// and to inform the node in question it has been read from after the cycle is complete
+type SuccesfulReads = HashMap<NodeCoord, Dir>;
+
+/// this is to prevent a write from being read in the same cycle due to evaluation order
+/// these pending writes should be written to each node's outbox after all the updates have been
+/// performed
+type PendingWrites = HashMap<NodeCoord, NodeOutbox>;
+
+fn step_execution(nodes: &mut Nodes, start: NodeCoord) {
+    let mut succesful_reads = SuccesfulReads::new();
+    let mut pending_writes = PendingWrites::new();
+
+    for node_loc in seek_nodes(&nodes, start) {
+        let [center, up, down, left, right] = nodes.get_many_mut([
+            &node_loc,
+            &node_loc.neighbor(Dir::Up),
+            &node_loc.neighbor(Dir::Down),
+            &node_loc.neighbor(Dir::Left),
+            &node_loc.neighbor(Dir::Right),
+        ]);
+
+        // TODO: can this expect be removed somehow?
+        let node = center.expect("seek_nodes() shouldn't return a NodeLoc that isn't occupied");
+
+        match &mut node.variant {
+            NodeType::Exec(exec_node) => match exec_node.step() {
+                exec_node::ExecNodeIO::None => {}
+                exec_node::ExecNodeIO::Out(node_outbox) => {
+                    pending_writes.insert(node_loc, node_outbox);
+                }
+                exec_node::ExecNodeIO::InDir(dir, mut continuation) => {
+                    let neighbor = match dir {
+                        Dir::Up => up,
+                        Dir::Down => down,
+                        Dir::Left => left,
+                        Dir::Right => right,
+                    };
+
+                    if let Some(read_value) = neighbor.and_then(|neighbor| {
+                        try_read_from(node_loc, dir, &mut neighbor.outbox, &mut succesful_reads)
+                    }) {
+                        pending_writes.insert(node_loc, continuation(read_value));
+                    }
+                }
+                exec_node::ExecNodeIO::InAny(num) => todo!(),
+            },
+
+            NodeType::Input(_) => todo!(),
+        }
+    }
+}
+
+fn try_read_from(
+    node_loc: NodeCoord,
+    read_dir: Dir,
+    neighbor_outbox: &mut NodeOutbox,
+    succesful_reads: &mut SuccesfulReads,
+) -> Option<Num> {
+    let Entry::Vacant(vacancy) = succesful_reads.entry(node_loc.neighbor(read_dir)) else {
+        return None;
+    };
+
+    let read_value = match neighbor_outbox {
+        NodeOutbox::Any(num) => Some(*num),
+        NodeOutbox::Directional(write_dir, num) => {
+            if *write_dir == read_dir.inverse() {
+                Some(*num)
+            } else {
+                None
+            }
+        }
+        NodeOutbox::Empty => None,
+    };
+
+    if read_value.is_some() {
+        *neighbor_outbox = NodeOutbox::Empty;
+        vacancy.insert(read_dir.inverse());
+    }
+
+    read_value
 }
 
 fn update_camera(

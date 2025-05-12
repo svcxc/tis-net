@@ -1,6 +1,8 @@
+use crate::NodeOutbox;
 use crate::consts;
-use crate::dir::Dir;
-use crate::num::Num;
+use crate::node::Dir;
+use crate::node::Num;
+use crate::node::StopResult;
 use arrayvec::{ArrayString, ArrayVec};
 
 #[derive(Clone, Debug)]
@@ -16,12 +18,125 @@ pub enum ExecNodeState {
     Empty,
     Errored(ParseErr),
     Ready(NodeCode),
-    Running {
-        code: NodeCode,
-        ip: u8,
-        acc: Num,
-        bak: Num,
-    },
+    Running(ExecNodeRuntime),
+}
+
+#[derive(Clone, Debug)]
+pub struct ExecNodeRuntime {
+    code: NodeCode,
+    ip: u8,
+    acc: Num,
+    bak: Num,
+    last: Option<Dir>,
+}
+
+impl ExecNodeRuntime {
+    fn inc_ip(&mut self) {
+        self.ip += 1;
+        if self.ip as usize >= self.code.len() {
+            self.ip = 0;
+        }
+    }
+
+    fn read_continuation<'node>(
+        &'node mut self,
+        and_then: ReadContinuation,
+    ) -> impl FnMut(Num) -> NodeOutbox + use<'node> {
+        move |input| match and_then {
+            ReadContinuation::Mov(ResolvedDst::Nil) => {
+                self.inc_ip();
+                NodeOutbox::Empty
+            }
+            ReadContinuation::Mov(ResolvedDst::Acc) => {
+                self.acc = input;
+                self.inc_ip();
+                NodeOutbox::Empty
+            }
+            ReadContinuation::Mov(ResolvedDst::Dir(dir)) => NodeOutbox::Directional(dir, input),
+            ReadContinuation::Mov(ResolvedDst::Any) => NodeOutbox::Any(input),
+            ReadContinuation::Add => {
+                self.acc = self.acc.saturating_add(input);
+                self.inc_ip();
+                NodeOutbox::Empty
+            }
+            ReadContinuation::Sub => {
+                self.acc = self.acc.saturating_sub(input);
+                self.inc_ip();
+                NodeOutbox::Empty
+            }
+            ReadContinuation::Jro => {
+                if input < 0 {
+                    self.ip = self.ip.saturating_sub(input.abs() as u8);
+                } else {
+                    self.ip = self.ip.saturating_add(input as u8);
+                    if self.ip as usize >= self.code.len() {
+                        self.ip = (self.code.len() - 1) as u8;
+                    }
+                }
+                NodeOutbox::Empty
+            }
+        }
+    }
+
+    fn resolve_src(&self, src: Src) -> ResolvedSrc {
+        match src {
+            Src::Acc => ResolvedSrc::Value(self.acc),
+            Src::Imm(immediate) => ResolvedSrc::Value(immediate),
+            Src::Nil => ResolvedSrc::Value(0),
+            Src::Dir(dir) => ResolvedSrc::Dir(dir),
+            Src::Any => ResolvedSrc::Any,
+            Src::Last => {
+                if let Some(last) = self.last {
+                    ResolvedSrc::Dir(last)
+                } else {
+                    ResolvedSrc::Value(0)
+                }
+            }
+        }
+    }
+
+    fn resolve_dst(&self, dst: Dst) -> ResolvedDst {
+        match dst {
+            Dst::Acc => ResolvedDst::Acc,
+            Dst::Dir(dir) => ResolvedDst::Dir(dir),
+            Dst::Any => ResolvedDst::Any,
+            Dst::Last => {
+                if let Some(last) = self.last {
+                    ResolvedDst::Dir(last)
+                } else {
+                    ResolvedDst::Nil
+                }
+            }
+            Dst::Nil => ResolvedDst::Nil,
+        }
+    }
+}
+
+pub struct Gizmos {
+    pub acc: ArrayString<4>,
+    pub bak: ArrayString<4>,
+    pub last: &'static str,
+    pub mode: &'static str,
+}
+
+enum ResolvedSrc {
+    Value(Num),
+    Dir(Dir),
+    Any,
+}
+
+enum ResolvedDst {
+    Nil,
+    Acc,
+    Dir(Dir),
+    Any,
+}
+
+#[derive(Clone, Debug)]
+enum Mode {
+    Exec,
+    Read,
+    Write,
 }
 
 type NodeText = ArrayString<{ consts::NODE_TEXT_BUFFER_SIZE }>;
@@ -257,6 +372,186 @@ impl ExecNode {
     pub fn cursor_line_column(&self) -> (usize, usize) {
         line_column(&self.text, self.cursor)
     }
+
+    pub fn stop(&mut self) -> StopResult {
+        let old_state = std::mem::replace(&mut self.state, ExecNodeState::Empty);
+
+        match old_state {
+            ExecNodeState::Running(ExecNodeRuntime { code, .. }) => {
+                self.state = ExecNodeState::Ready(code);
+                StopResult::Stopped
+            }
+
+            other
+            @ (ExecNodeState::Empty | ExecNodeState::Errored(_) | ExecNodeState::Ready(_)) => {
+                self.state = other;
+                StopResult::WasAlreadyStopped
+            }
+        }
+    }
+
+    pub fn step<'node>(&'node mut self) -> ExecNodeIO<impl FnMut(Num) -> NodeOutbox + use<'node>> {
+        let state = &mut self.state;
+
+        let code = match state {
+            ExecNodeState::Empty | ExecNodeState::Errored(_) => return ExecNodeIO::None,
+
+            ExecNodeState::Ready(code) => {
+                // this clone does not theoretically need to exist I think
+                // we could take it out by making this function take ownership of self and then returning it again
+                // that way we could partially move `code` to its new place in the ExecNodeState::Running that gets constructed below I think
+                // however, that seems a lot of hassle right now compared to just doing a .clone()
+                code.clone()
+            }
+
+            ExecNodeState::Running(runtime) => {
+                return match runtime.code[runtime.ip as usize].op {
+                    Op::Mov(src, dst) => {
+                        let resolved_src = runtime.resolve_src(src);
+                        let resolved_dst = runtime.resolve_dst(dst);
+
+                        match resolved_src {
+                            ResolvedSrc::Value(input) => match resolved_dst {
+                                ResolvedDst::Nil => {
+                                    runtime.inc_ip();
+                                    ExecNodeIO::None
+                                }
+                                ResolvedDst::Acc => {
+                                    runtime.inc_ip();
+                                    runtime.acc = input;
+                                    ExecNodeIO::None
+                                }
+                                ResolvedDst::Dir(dir) => {
+                                    ExecNodeIO::Out(NodeOutbox::Directional(dir, input))
+                                }
+                                ResolvedDst::Any => ExecNodeIO::Out(NodeOutbox::Any(input)),
+                            },
+                            ResolvedSrc::Dir(dir) => ExecNodeIO::InDir(
+                                dir,
+                                runtime.read_continuation(ReadContinuation::Mov(resolved_dst)),
+                            ),
+                            ResolvedSrc::Any => ExecNodeIO::InAny(
+                                runtime.read_continuation(ReadContinuation::Mov(resolved_dst)),
+                            ),
+                        }
+                    }
+                    Op::Nop => {
+                        runtime.inc_ip();
+                        ExecNodeIO::None
+                    }
+                    Op::Swp => todo!(),
+                    Op::Sav => todo!(),
+                    Op::Add(src) => match runtime.resolve_src(src) {
+                        ResolvedSrc::Value(value) => {
+                            runtime.acc.saturating_add(value);
+                            runtime.inc_ip();
+                            ExecNodeIO::None
+                        }
+                        ResolvedSrc::Dir(dir) => {
+                            ExecNodeIO::InDir(dir, runtime.read_continuation(ReadContinuation::Add))
+                        }
+                        ResolvedSrc::Any => {
+                            ExecNodeIO::InAny(runtime.read_continuation(ReadContinuation::Add))
+                        }
+                    },
+                    Op::Sub(src) => match runtime.resolve_src(src) {
+                        ResolvedSrc::Value(value) => {
+                            runtime.acc.saturating_sub(value);
+                            runtime.inc_ip();
+                            ExecNodeIO::None
+                        }
+                        ResolvedSrc::Dir(dir) => {
+                            ExecNodeIO::InDir(dir, runtime.read_continuation(ReadContinuation::Sub))
+                        }
+                        ResolvedSrc::Any => {
+                            ExecNodeIO::InAny(runtime.read_continuation(ReadContinuation::Sub))
+                        }
+                    },
+                    Op::Neg => {
+                        runtime.acc = runtime.acc.saturating_neg();
+                        runtime.inc_ip();
+                        ExecNodeIO::None
+                    }
+                    Op::Jmp(_) => todo!(),
+                    Op::Jez(_) => todo!(),
+                    Op::Jnz(_) => todo!(),
+                    Op::Jgz(_) => todo!(),
+                    Op::Jlz(_) => todo!(),
+                    Op::Jro(_) => todo!(),
+                };
+            }
+        };
+
+        *state = ExecNodeState::Running(ExecNodeRuntime {
+            code,
+            ip: 0,
+            acc: 0,
+            bak: 0,
+            last: None,
+        });
+
+        ExecNodeIO::None
+    }
+
+    pub fn gizmos(&self) -> Gizmos {
+        let ExecNodeState::Running(runtime) = &self.state else {
+            return Gizmos {
+                acc: ArrayString::from("0").unwrap(),
+                bak: ArrayString::from("(0)").unwrap(),
+                last: "N/A",
+                mode: "EDIT",
+            };
+        };
+
+        use std::fmt::Write;
+
+        let mut acc = ArrayString::new();
+        let mut bak = ArrayString::new();
+
+        write!(&mut acc, "{}", runtime.acc);
+
+        // if formatted number occupies more than 2 characters,
+        // drop the parentheses to make it fit
+        if runtime.bak < -99 {
+            write!(&mut acc, "{}", runtime.bak);
+        } else {
+            write!(&mut bak, "({})", runtime.bak);
+        }
+
+        let last = match runtime.last {
+            Some(Dir::Up) => "UP",
+            Some(Dir::Down) => "DOWN",
+            Some(Dir::Left) => "LEFT",
+            Some(Dir::Right) => "RIGHT",
+            None => "N/A",
+        };
+
+        let mode = "TODO";
+
+        Gizmos {
+            acc,
+            bak,
+            last,
+            mode,
+        }
+    }
+}
+
+enum ReadContinuation {
+    Mov(ResolvedDst),
+    Add,
+    Sub,
+    Jro,
+}
+
+pub enum ExecNodeIO<F>
+where
+    F: FnMut(Num) -> NodeOutbox,
+{
+    None,
+    InDir(Dir, F),
+    InAny(F),
+    Out(NodeOutbox),
 }
 
 fn update_state(text: &NodeText) -> ExecNodeState {
@@ -325,6 +620,8 @@ enum Src {
     Dir(Dir),
     Acc,
     Nil,
+    Any,
+    Last,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -332,6 +629,8 @@ enum Dst {
     Dir(Dir),
     Acc,
     Nil,
+    Any,
+    Last,
 }
 
 #[derive(Clone, Debug)]
@@ -530,21 +829,3 @@ fn expect_dst<'txt>(
         }),
     }
 }
-
-// fn inc_ip(&mut self) {
-//     self.ip += 1;
-//     if self.ip as usize >= self.code.len() {
-//         self.ip = 0;
-//     }
-// }
-
-// fn jro(&mut self, offset: Num) {
-//     if offset < 0 {
-//         self.ip = self.ip.saturating_sub(offset.abs() as u8);
-//     } else {
-//         self.ip = self.ip.saturating_add(offset as u8);
-//         if self.ip as usize >= self.code.len() {
-//             self.ip = (self.code.len() - 1) as u8;
-//         }
-//     }
-// }
