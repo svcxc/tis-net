@@ -1449,6 +1449,7 @@ fn get_input(rl: &mut RaylibHandle, repeat: &mut RepeatKey) -> Input {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct Output {
     clipboard: Option<String>,
 }
@@ -2667,4 +2668,41 @@ fn serialize_toml(nodes: &Nodes, highlighted_node: Option<NodeCoord>) -> String 
     }
 
     toml
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn navigation() {
+        let initial_state = init();
+
+        let move_direction = Dir::Down;
+
+        let arrow_key = Key::Arrow(move_direction);
+
+        let initial_highlighted_node = initial_state.model.highlighted_node;
+
+        let input = Input {
+            mods: Modifiers::Ctrl,
+            pressed: Some(arrow_key),
+            window_dimensions: (1024, 1024),
+            mouse_wheel_move: 0.0,
+            clipboard: String::new(),
+        };
+
+        let update = update(initial_state, input);
+
+        let (new_state, output) = match update {
+            Update::Exit => panic!("did not request exit"),
+            Update::Update { new, output } => (new, output),
+        };
+
+        assert_eq!(output, Output { clipboard: None });
+
+        let expected_highlighted_node = initial_highlighted_node.neighbor(move_direction);
+
+        assert_eq!(new_state.model.highlighted_node, expected_highlighted_node)
+    }
 }
